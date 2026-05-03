@@ -171,6 +171,11 @@ class MlxLiveVoicePipeline:
             pass
         return q
 
+    def conversation_messages_for_client(self) -> list[dict[str, str]]:
+        """Snapshot of Ollama messages for HTTP restore (same truncation as SSE)."""
+
+        return _conversation_for_sse([dict(m) for m in self._llm_messages])
+
     async def unsubscribe(self, q: asyncio.Queue[dict[str, Any]]) -> None:
         async with self._q_lock:
             self._qs.discard(q)

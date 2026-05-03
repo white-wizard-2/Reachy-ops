@@ -109,6 +109,15 @@ def create_app(
             "mlx_live_ready": mic_state.get("mlx_pipeline") is not None,
         }
 
+    @app.get("/api/voice/conversation")
+    def voice_conversation() -> dict[str, Any]:
+        """Current MLX voice → Ollama message list (for UI restore after refresh)."""
+
+        pipe = mic_state.get("mlx_pipeline")
+        if pipe is None:
+            return {"messages": []}
+        return {"messages": pipe.conversation_messages_for_client()}
+
     @app.get("/api/voice/live")
     async def voice_live() -> StreamingResponse:
         pipe = await ensure_mlx_voice_pipeline(mic_state)

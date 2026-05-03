@@ -7,7 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
 export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://192.168.1.228:11434}"
-export OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b}"
+export OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b-mlx}"
 export OLLAMA_VOICE_SAY=1 
 # Voice: MLX Whisper on the robot mic ring → utterances on silence → Ollama /api/chat with rolling history.
 # Install Apple Silicon extras: pip install -r requirements-robot-manage-mlx.txt

@@ -19,6 +19,9 @@ type PipeInfo = {
 
 type ChatMessage = { role: string; content: string };
 
+const VOICE_SESSION_LIVE = "reachy_ops_voice_live";
+const VOICE_SESSION_UI = "reachy_ops_voice_ui_v1";
+
 type SsePayload =
   | { event: "meta"; voice?: string }
   | { event: "utterance_start" }
@@ -70,6 +73,13 @@ async function fetchVoicePipeline(): Promise<PipeInfo> {
   const res = await fetch("/api/voice/pipeline");
   if (!res.ok) throw new Error(`voice pipeline ${res.status}`);
   return res.json() as Promise<PipeInfo>;
+}
+
+async function fetchVoiceConversation(): Promise<ChatMessage[]> {
+  const res = await fetch("/api/voice/conversation");
+  if (!res.ok) return [];
+  const j = (await res.json()) as { messages?: ChatMessage[] };
+  return Array.isArray(j.messages) ? j.messages : [];
 }
 
 function MicHistogram({ levels, peak }: { levels: number[]; peak: number }) {
@@ -138,10 +148,43 @@ export function VoiceCognition() {
   const [meterPeak, setMeterPeak] = useState(0);
   const llmPreRef = useRef<HTMLPreElement>(null);
   const liveOnRef = useRef(false);
+  const voiceResumeRef = useRef(false);
+  const [uiHydrated, setUiHydrated] = useState(false);
 
   useEffect(() => {
     liveOnRef.current = liveOn;
   }, [liveOn]);
+
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(VOICE_SESSION_UI);
+      if (raw) {
+        const u = JSON.parse(raw) as { lastUtterance?: string; llmOut?: string; conversation?: ChatMessage[] };
+        if (typeof u.lastUtterance === "string") setLastUtterance(u.lastUtterance);
+        if (typeof u.llmOut === "string") setLlmOut(u.llmOut);
+        if (Array.isArray(u.conversation) && u.conversation.length > 0) setConversation(u.conversation);
+      }
+    } catch {
+      /* private mode or corrupt */
+    }
+    void (async () => {
+      const server = await fetchVoiceConversation();
+      if (server.length > 0) setConversation(server);
+      setUiHydrated(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!uiHydrated) return;
+    const id = window.setTimeout(() => {
+      try {
+        sessionStorage.setItem(VOICE_SESSION_UI, JSON.stringify({ lastUtterance, llmOut, conversation }));
+      } catch {
+        /* ignore */
+      }
+    }, 300);
+    return () => window.clearTimeout(id);
+  }, [uiHydrated, lastUtterance, llmOut, conversation]);
 
   useEffect(() => {
     void (async () => {
@@ -213,6 +256,11 @@ export function VoiceCognition() {
     liveOnRef.current = false;
     setLiveOn(false);
     setListening(false);
+    try {
+      sessionStorage.setItem(VOICE_SESSION_LIVE, "0");
+    } catch {
+      /* ignore */
+    }
   }, []);
 
   useEffect(() => {
@@ -225,18 +273,22 @@ export function VoiceCognition() {
     if (liveOnRef.current) return;
     liveOnRef.current = true;
     setLiveErr(null);
-    setLastUtterance("");
-    setLlmOut("");
-    setConversation([]);
     setListening(false);
     setLiveOn(true);
     const ac = new AbortController();
     liveAbortRef.current = ac;
     try {
+      const sync = await fetchVoiceConversation();
+      if (sync.length > 0) setConversation(sync);
       const res = await fetch("/api/voice/live", { signal: ac.signal });
       if (!res.ok || !res.body) {
         const detail = (await res.text()).trim();
         throw new Error(detail || `live ${res.status}`);
+      }
+      try {
+        sessionStorage.setItem(VOICE_SESSION_LIVE, "1");
+      } catch {
+        /* ignore */
       }
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -285,6 +337,19 @@ export function VoiceCognition() {
         .catch(() => {});
     }
   }, []);
+
+  useEffect(() => {
+    if (voiceResumeRef.current || !pipe?.mlx_live_ready) return;
+    let want = false;
+    try {
+      want = sessionStorage.getItem(VOICE_SESSION_LIVE) === "1";
+    } catch {
+      return;
+    }
+    if (!want || liveOnRef.current) return;
+    voiceResumeRef.current = true;
+    void startLive();
+  }, [pipe?.mlx_live_ready, startLive]);
 
   return (
     <section className="mt-14 space-y-6 md:mt-20">
@@ -350,7 +415,7 @@ export function VoiceCognition() {
             {pipe?.mlx_whisper_import_ok === false
               ? "This server cannot import mlx_whisper — install Apple Silicon deps (requirements-robot-manage-mlx.txt)."
               : pipe?.mlx_live_ready
-                ? "Speak in phrases; the server waits for silence before transcribing and updating the LLM context."
+                ? "Speak in phrases; the server waits for silence before transcribing and updating the LLM context. Refresh restores Ollama context from the server when the session is still up; live reconnects if it was left on."
                 : "Click Start live — the MLX pipeline starts on first connect when the robot mic ring is active."}
           </CardDescription>
           <Separator className="mt-3 bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
