@@ -1,0 +1,134 @@
+"""Runtime configuration (env-first)."""
+
+from __future__ import annotations
+
+import os
+
+
+def ollama_base_url() -> str:
+    return os.environ.get("OLLAMA_BASE_URL", "http://192.168.1.228:11434").rstrip("/")
+
+
+def ollama_model() -> str:
+    return os.environ.get("OLLAMA_MODEL", "gemma4:e4b")
+
+
+def ollama_system_prompt() -> str:
+    return os.environ.get(
+        "OLLAMA_SYSTEM",
+        "You are a helpful assistant for someone operating a Reachy Mini robot. "
+        "User turns are transcribed from the robot microphone; answer briefly and accurately. "
+        "Do not invent camera feeds, coordinates, sectors, or surveillance-style fiction unless they ask.",
+    )
+
+
+def ollama_voice_http_stream() -> bool:
+    """``stream: true`` when ``OLLAMA_VOICE_STREAM=1`` (default ``stream: false``)."""
+
+    return os.environ.get("OLLAMA_VOICE_STREAM", "").strip().lower() in ("1", "true", "yes")
+
+
+def ollama_num_ctx() -> int:
+    return int(os.environ.get("OLLAMA_NUM_CTX", "8192"))
+
+
+def mlx_whisper_repo() -> str:
+    """Hugging Face repo id for ``mlx_whisper.transcribe`` (default: large-v3 MLX)."""
+
+    return os.environ.get(
+        "MLX_WHISPER_REPO",
+        "mlx-community/whisper-large-v3-mlx",
+    ).strip()
+
+
+def mlx_whisper_max_chunk_sec() -> float:
+    """Max seconds of audio per utterance before a forced Whisper pass (cap)."""
+
+    return float(os.environ.get("MLX_WHISPER_MAX_CHUNK_SEC", "20.0"))
+
+
+def mlx_whisper_language() -> str | None:
+    """ISO-639-1 code passed to Whisper decode (e.g. ``en``); empty env → auto-detect."""
+
+    raw = os.environ.get("MLX_WHISPER_LANGUAGE", "").strip()
+    return raw if raw else None
+
+
+def mlx_whisper_no_speech_threshold() -> float:
+    """Higher → more likely to treat quiet as no speech (default ``0.82``; Whisper default ~0.6)."""
+
+    return float(os.environ.get("MLX_WHISPER_NO_SPEECH_THRESHOLD", "0.82"))
+
+
+def mlx_whisper_min_rms() -> float:
+    """Skip Whisper on an utterance when mono float32 RMS is below this; ``0`` disables (default ``0.01``)."""
+
+    return float(os.environ.get("MLX_WHISPER_MIN_RMS", "0.01"))
+
+
+def mlx_whisper_condition_on_previous_text() -> bool:
+    """``MLX_WHISPER_CONDITION_ON_PREVIOUS=1`` — default off to reduce repetition on quiet buffers."""
+
+    return os.environ.get("MLX_WHISPER_CONDITION_ON_PREVIOUS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
+def mlx_voice_tick_sec() -> float:
+    """VAD poll interval in seconds (default ``0.12``)."""
+
+    return float(os.environ.get("MLX_VOICE_TICK_SEC", "0.12"))
+
+
+def mlx_voice_silence_end_ms() -> float:
+    """End an utterance after this many ms of sub-threshold RMS (default ``800``)."""
+
+    return float(os.environ.get("MLX_VOICE_SILENCE_END_MS", "800"))
+
+
+def mlx_voice_min_utterance_ms() -> float:
+    """Minimum voiced duration (ms) before silence can end an utterance (default ``400``)."""
+
+    return float(os.environ.get("MLX_VOICE_MIN_UTTERANCE_MS", "400"))
+
+
+def mlx_voice_speech_rms() -> float:
+    """Mono float32 RMS above this counts as speech for VAD (default ``0.012``)."""
+
+    return float(os.environ.get("MLX_VOICE_SPEECH_RMS", "0.012"))
+
+
+def ollama_voice_text_system_prompt() -> str:
+    return os.environ.get(
+        "OLLAMA_VOICE_TEXT_SYSTEM",
+        "You are a helpful assistant for someone operating a Reachy Mini robot. "
+        "You receive user turns transcribed from the robot microphone (MLX Whisper). "
+        "Reply briefly and helpfully. Maintain continuity with prior turns in this conversation.",
+    )
+
+
+def ollama_voice_max_history_messages() -> int:
+    """Max chat messages (including system) kept for Ollama; oldest user/assistant pairs are dropped."""
+
+    return max(4, int(os.environ.get("OLLAMA_VOICE_MAX_HISTORY_MESSAGES", "32")))
+
+
+def ollama_voice_say_enabled() -> bool:
+    """``OLLAMA_VOICE_SAY=1`` — speak each completed LLM sentence with macOS ``say`` (host running robot_manage)."""
+
+    return os.environ.get("OLLAMA_VOICE_SAY", "").strip().lower() in ("1", "true", "yes")
+
+
+def ollama_voice_say_voice() -> str | None:
+    """Optional ``say -v`` voice name (``OLLAMA_VOICE_SAY_VOICE``)."""
+
+    v = os.environ.get("OLLAMA_VOICE_SAY_VOICE", "").strip()
+    return v if v else None
+
+
+def ollama_voice_say_post_ms() -> float:
+    """Ms to keep mic gated after each TTS batch (reverb tail). Env: ``OLLAMA_VOICE_SAY_POST_MS`` (default ``500``)."""
+
+    return float(os.environ.get("OLLAMA_VOICE_SAY_POST_MS", "500"))

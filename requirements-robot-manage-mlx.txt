@@ -1,0 +1,3 @@
+# Apple Silicon: MLX Whisper ASR for robot_manage live voice pipeline.
+# pip install -r requirements.txt -r requirements-robot-manage.txt -r requirements-robot-manage-mlx.txt
+mlx-whisper>=0.4.3

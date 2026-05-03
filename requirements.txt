@@ -1,0 +1,13 @@
+# Layer 1/2 for robot_manage (with requirements-robot-manage.txt): Reachy SDK + numpy/OpenCV.
+# Not for archived _temp/robot_world (that stack needs torch + see _temp/README.md).
+# reachy-sdk / mobile-base-sdk caps grpcio; pin grpc pair for reliable wheels.
+setuptools>=65
+grpcio==1.62.2
+grpcio-tools==1.62.2
+protobuf>=4.25.0,<=4.25.3
+
+reachy-mini
+reachy-sdk
+numpy>=2.2.5,<2.5
+opencv-python-headless>=4.9.0.80
+requests

@@ -1,0 +1,59 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 222 47% 5%;
+    --foreground: 210 40% 96%;
+    --card: 222 40% 8%;
+    --card-foreground: 210 40% 96%;
+    --muted: 222 30% 14%;
+    --muted-foreground: 215 16% 52%;
+    --border: 217 32% 17%;
+    --input: 217 32% 17%;
+    --primary: 187 95% 48%;
+    --primary-foreground: 222 47% 6%;
+    --secondary: 263 70% 55%;
+    --secondary-foreground: 210 40% 98%;
+    --accent: 263 85% 62%;
+    --accent-foreground: 210 40% 98%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+    --ring: 187 95% 48%;
+    --radius: 0.65rem;
+  }
+
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply min-h-screen bg-background font-sans text-foreground antialiased;
+  }
+}
+
+@layer utilities {
+  .viewport-glass {
+    @apply border border-primary/20 bg-card/40 shadow-[0_0_40px_-12px_hsl(var(--primary)/0.5),inset_0_1px_0_0_hsl(var(--primary)/0.12)] backdrop-blur-md;
+  }
+
+  .viewport-scanlines::after {
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    inset: 0;
+    background: repeating-linear-gradient(
+      0deg,
+      transparent,
+      transparent 2px,
+      hsl(var(--foreground) / 0.02) 2px,
+      hsl(var(--foreground) / 0.02) 3px
+    );
+    border-radius: inherit;
+  }
+
+  .text-glow {
+    text-shadow: 0 0 20px hsl(var(--primary) / 0.55), 0 0 40px hsl(var(--secondary) / 0.25);
+  }
+}
