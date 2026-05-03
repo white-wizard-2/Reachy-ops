@@ -43,7 +43,7 @@ def create_app(
     static_path = static_dir if static_dir is not None else Path(__file__).resolve().parent / "static"
     mini_ref: list[Optional[ReachyMini]] = [None]
     pub_ref: list[Optional[MiniCameraPublisher]] = [None]
-    mic_state: dict[str, Any] = {"buffer": None, "collector": None, "mlx_pipeline": None}
+    mic_state: dict[str, Any] = {"buffer": None, "collector": None, "mlx_pipeline": None, "mini": None}
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -57,6 +57,7 @@ def create_app(
         pub.start()
         mini_ref[0] = mini
         pub_ref[0] = pub
+        mic_state["mini"] = mini
         if mini.media.audio is not None:
             await asyncio.to_thread(mini.media.start_recording)
             mic_buf = RobotMicRingBuffer()
@@ -64,7 +65,7 @@ def create_app(
             mic_state["buffer"] = mic_buf
             mic_state["collector"] = mic_collector
             mic_collector.start()
-            mlx_pipe = try_create_mlx_pipeline(mic_buf)
+            mlx_pipe = try_create_mlx_pipeline(mic_buf, mini)
             if mlx_pipe is not None:
                 mic_state["mlx_pipeline"] = mlx_pipe
                 await mlx_pipe.start()
@@ -80,6 +81,7 @@ def create_app(
                 col.stop_join()
             mic_state["collector"] = None
             mic_state["buffer"] = None
+            mic_state["mini"] = None
             pub.stop()
             m = mini_ref[0]
             if m is not None:

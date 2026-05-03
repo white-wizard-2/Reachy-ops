@@ -9,15 +9,7 @@ cd "$ROOT"
 export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://192.168.1.228:11434}"
 export OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b-mlx}"
 export OLLAMA_VOICE_SAY=1 
-# Voice: MLX Whisper on the robot mic ring → utterances on silence → Ollama /api/chat with rolling history.
-# Install Apple Silicon extras: pip install -r requirements-robot-manage-mlx.txt
-# First pipeline start may download MLX_WHISPER_REPO (default mlx-community/whisper-large-v3-mlx).
-# Utterance / VAD: MLX_VOICE_TICK_SEC (default 0.12), MLX_VOICE_SILENCE_END_MS (800), MLX_VOICE_MIN_UTTERANCE_MS (400),
-#   MLX_VOICE_SPEECH_RMS (0.012). Cap per utterance: MLX_WHISPER_MAX_CHUNK_SEC (20).
-# Whisper decode: MLX_WHISPER_NO_SPEECH_THRESHOLD, MLX_WHISPER_MIN_RMS, MLX_WHISPER_CONDITION_ON_PREVIOUS, MLX_WHISPER_LANGUAGE.
-# Ollama: OLLAMA_NUM_CTX, OLLAMA_VOICE_STREAM=1 for streamed tokens, OLLAMA_VOICE_MAX_HISTORY_MESSAGES (default 32, min 4).
-# TTS: OLLAMA_VOICE_SAY=1 speaks each completed LLM sentence via macOS ``say`` on the host; optional OLLAMA_VOICE_SAY_VOICE (``say -v``).
-# While ``say`` runs, robot ASR is skipped (``OLLAMA_VOICE_SAY_POST_MS`` tail after each TTS batch, default 500).
+
 if [[ ! -d .venv ]]; then
   python3 -m venv .venv
 fi

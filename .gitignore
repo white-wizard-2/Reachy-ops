@@ -8,4 +8,6 @@ dist/
 build/
 .DS_Store
 robot_manage/web/node_modules/
+# Vite build output (robot_manage/web/vite.config.ts build.outDir)
+robot_manage/static/
 _temp

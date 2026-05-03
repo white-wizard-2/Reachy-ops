@@ -82,6 +82,41 @@ async function fetchVoiceConversation(): Promise<ChatMessage[]> {
   return Array.isArray(j.messages) ? j.messages : [];
 }
 
+/** Renders voice JSON envelope as spoken text; optional motion line from server-shaped JSON. */
+function AssistantMessageBody({ content }: { content: string }) {
+  const t = content.trim();
+  if (!t.startsWith("{")) {
+    return <pre className="whitespace-pre-wrap break-words">{content}</pre>;
+  }
+  try {
+    const o = JSON.parse(t) as { speech?: unknown; move?: unknown };
+    if (typeof o.speech !== "string") {
+      return <pre className="whitespace-pre-wrap break-words">{content}</pre>;
+    }
+    let motion: string | null = null;
+    if (o.move !== null && o.move !== undefined) {
+      if (typeof o.move === "object") {
+        const m = o.move as { library?: unknown; id?: unknown };
+        if (typeof m.library === "string" && typeof m.id === "string") {
+          motion = `${m.library}/${m.id}`;
+        }
+      } else if (typeof o.move === "string") {
+        motion = o.move;
+      }
+    }
+    return (
+      <>
+        <p className="whitespace-pre-wrap break-words">{o.speech}</p>
+        {motion ? (
+          <p className="mt-1.5 font-mono text-[10px] text-muted-foreground/90">motion · {motion}</p>
+        ) : null}
+      </>
+    );
+  } catch {
+    return <pre className="whitespace-pre-wrap break-words">{content}</pre>;
+  }
+}
+
 function MicHistogram({ levels, peak }: { levels: number[]; peak: number }) {
   return (
     <div className="rounded-lg border border-border/60 bg-black/50 p-3">
@@ -123,7 +158,11 @@ function ConversationPanel({ messages }: { messages: ChatMessage[] }) {
             )}
           >
             <span className="mb-1 block text-[10px] uppercase tracking-widest text-muted-foreground/90">{m.role}</span>
-            <pre className="whitespace-pre-wrap break-words">{m.content}</pre>
+            {m.role === "assistant" ? (
+              <AssistantMessageBody content={m.content} />
+            ) : (
+              <pre className="whitespace-pre-wrap break-words">{m.content}</pre>
+            )}
           </div>
         ))
       )}

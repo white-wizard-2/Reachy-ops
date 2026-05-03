@@ -11,6 +11,7 @@ import numpy as np
 
 from robot_manage.llm_say import LlmSayRunner, pull_complete_sentences
 from robot_manage.mic_buffer import RobotMicRingBuffer
+from robot_manage.move_catalog import VoiceAssistantJsonError, parse_voice_assistant_json
 from robot_manage.ollama_voice import stream_text_chat_messages
 from robot_manage.settings import (
     mlx_voice_min_utterance_ms,
@@ -112,12 +113,12 @@ def _mlx_transcribe_fn(
     return mlx_whisper.transcribe(mono, path_or_hf_repo=path_or_hf_repo, **kw)
 
 
-def try_create_mlx_pipeline(buf: RobotMicRingBuffer) -> MlxLiveVoicePipeline | None:
+def try_create_mlx_pipeline(buf: RobotMicRingBuffer, mini: Any | None = None) -> MlxLiveVoicePipeline | None:
     try:
         import mlx_whisper  # noqa: F401
     except ImportError:
         return None
-    return MlxLiveVoicePipeline(buf)
+    return MlxLiveVoicePipeline(buf, mini=mini)
 
 
 async def ensure_mlx_voice_pipeline(mic_state: dict[str, Any]) -> MlxLiveVoicePipeline | None:
@@ -130,7 +131,7 @@ async def ensure_mlx_voice_pipeline(mic_state: dict[str, Any]) -> MlxLiveVoicePi
         buf = mic_state.get("buffer")
         if buf is None:
             return None
-        created = try_create_mlx_pipeline(buf)
+        created = try_create_mlx_pipeline(buf, mic_state.get("mini"))
         if created is None:
             return None
         await created.start()
@@ -139,8 +140,9 @@ async def ensure_mlx_voice_pipeline(mic_state: dict[str, Any]) -> MlxLiveVoicePi
 
 
 class MlxLiveVoicePipeline:
-    def __init__(self, buf: RobotMicRingBuffer) -> None:
+    def __init__(self, buf: RobotMicRingBuffer, *, mini: Any | None = None) -> None:
         self._buf = buf
+        self._mini = mini
         self._qs: set[asyncio.Queue[dict[str, Any]]] = set()
         self._q_lock = asyncio.Lock()
         self._llm_lock = asyncio.Lock()
@@ -157,6 +159,8 @@ class MlxLiveVoicePipeline:
         self._in_utt = False
         self._silence_ms = 0.0
         self._say = LlmSayRunner(mic_hooks=self)
+        self._move_spec_this_turn: tuple[str, str] | None = None
+        self._move_play_task: asyncio.Task[None] | None = None
 
     async def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=512)
@@ -227,10 +231,42 @@ class MlxLiveVoicePipeline:
                 pass
         self._tasks.clear()
         await self._say.aclose()
+        await self._stop_move_playback()
         self._mic_accept_event.set()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
+
+    async def _stop_move_playback(self) -> None:
+        if self._mini is not None:
+            try:
+                self._mini.cancel_move()
+            except Exception:
+                pass
+        t = self._move_play_task
+        self._move_play_task = None
+        if t is not None and not t.done():
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+    async def _play_move_worker(self, hf: str, move_name: str) -> None:
+        mini = self._mini
+        if mini is None:
+            return
+        try:
+            from reachy_mini.motion.recorded_move import RecordedMoves
+
+            rm = RecordedMoves(hf)
+            mv = rm.get(move_name)
+            # Dataset WAVs (if present) are skipped; this pipeline uses host TTS for speech audio.
+            await asyncio.to_thread(mini.play_move, mv, sound=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
 
     async def on_tts_begin(self) -> None:
         self._mic_accept_event.clear()
@@ -244,10 +280,20 @@ class MlxLiveVoicePipeline:
                 self._silence_ms = 0.0
         if need_cancel:
             await self._broadcast({"event": "utterance_end", "text": ""})
+        spec = self._move_spec_this_turn
+        if spec is not None and self._mini is not None:
+            hf, nm = spec
+            await self._stop_move_playback()
+            self._move_play_task = asyncio.create_task(
+                self._play_move_worker(hf, nm),
+                name="mlx_recorded_move",
+            )
 
     async def on_tts_end(self) -> None:
+        await self._stop_move_playback()
         await asyncio.sleep(ollama_voice_say_post_ms() / 1000.0)
         self._mic_accept_event.set()
+        self._move_spec_this_turn = None
 
     async def _vad_loop(self) -> None:
         sr = RobotMicRingBuffer.SAMPLE_RATE
@@ -372,7 +418,7 @@ class MlxLiveVoicePipeline:
                 }
             )
             reply_parts: list[str] = []
-            say_buf = ""
+            self._move_spec_this_turn = None
             try:
                 await self._broadcast({"event": "llm_round_start"})
                 async for frag in stream_text_chat_messages(
@@ -385,10 +431,16 @@ class MlxLiveVoicePipeline:
                         break
                     reply_parts.append(frag)
                     await self._broadcast({"event": "llm_token", "t": frag})
-                    say_buf += frag
-                    sents, say_buf = pull_complete_sentences(say_buf)
-                    for s in sents:
-                        await self._say.enqueue_sentence(s)
+                joined = "".join(reply_parts).strip()
+                try:
+                    pair, speech, assistant_content = parse_voice_assistant_json(joined)
+                except VoiceAssistantJsonError as e:
+                    await self._broadcast({"event": "error", "message": f"assistant_json:{e!s}"})
+                    self._llm_messages.pop()
+                    return
+                if self._say.running and speech.strip() and pair is not None:
+                    self._move_spec_this_turn = pair
+                say_buf = speech
                 sents, say_buf = pull_complete_sentences(say_buf)
                 for s in sents:
                     await self._say.enqueue_sentence(s)
@@ -401,7 +453,7 @@ class MlxLiveVoicePipeline:
                 await self._broadcast({"event": "error", "message": f"ollama_text:{e!s}"})
                 self._llm_messages.pop()
                 return
-            reply = "".join(reply_parts).strip()
+            reply = assistant_content
             self._llm_messages.append({"role": "assistant", "content": reply})
             self._trim_history()
             await self._broadcast(
