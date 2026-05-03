@@ -48,21 +48,6 @@ See comments in `run_robot_manage.sh` for `OLLAMA_*`, `MLX_*`, and `OLLAMA_VOICE
 
 ---
 
-## GitHub
-
-Remote (replace or add if you already have `origin`):
-
-```bash
-git init
-git remote add origin git@github.com:white-wizard-2/Reachy-ops.git
-git add -A
-git commit -m "Initial Reachy-ops import"
-git branch -M main
-git push -u origin main
-```
-
----
-
 ## Development
 
 ```bash
