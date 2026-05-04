@@ -11,6 +11,7 @@ import {
 
 import { REACHY_MODES_TOOLS_EVENT } from "@/voiceModesToolsEvent";
 import type { CameraLayoutResponse } from "@/types/camera";
+import type { YoloDetectionsPayload, YoloVisionState } from "@/types/yoloVision";
 
 type LlmConfig = { model: string; ollama_host: string };
 
@@ -20,6 +21,8 @@ type MeterPayload = { levels: number[]; peak: number };
 
 type PipeInfo = {
   mlx_whisper_import_ok: boolean;
+  /** Server import exception text when ``mlx_whisper_import_ok`` is false. */
+  mlx_whisper_import_error: string | null;
   mlx_live_ready: boolean;
 };
 
@@ -30,6 +33,8 @@ export type DeviceControlsState = {
   audio_output_enabled: boolean;
   /** When on, empty LLM reply triggers a head + antenna scan on the robot. */
   idle_look_sweep_enabled: boolean;
+  /** When on, server steers head toward moving YOLO ByteTrack targets (Apple Silicon + weights only). */
+  yolo_follow_enabled: boolean;
   /** Daemon mic capture level 0–100 (POST ``/api/volume/microphone/set``). */
   daemon_mic_input_volume: number;
   /** Daemon speaker output 0–100 (POST ``/api/volume/set``; may play a short test tone). */
@@ -52,12 +57,14 @@ type SnapshotPayload = {
   modes_tools: { mode: string | null; tools: string[] };
   conversation: { role: string; content: string }[];
   robot_state: RobotStateMsg;
+  yolo_vision?: YoloVisionState;
   device_controls?: {
     mic_enabled?: boolean;
     camera_enabled?: boolean;
     bot_awake?: boolean;
     audio_output_enabled?: boolean;
     idle_look_sweep_enabled?: boolean;
+    yolo_follow_enabled?: boolean;
     daemon_mic_input_volume?: number;
     daemon_speaker_volume?: number;
   };
@@ -75,6 +82,8 @@ type AppSocketState = {
   modesTools: { mode: string | null; tools: string[] };
   conversation: { role: string; content: string }[];
   deviceControls: DeviceControlsState;
+  yoloVision: YoloVisionState;
+  yoloDetections: YoloDetectionsPayload | null;
 };
 
 const defaultDeviceControls: DeviceControlsState = {
@@ -83,6 +92,7 @@ const defaultDeviceControls: DeviceControlsState = {
   bot_awake: true,
   audio_output_enabled: true,
   idle_look_sweep_enabled: false,
+  yolo_follow_enabled: true,
   daemon_mic_input_volume: 70,
   daemon_speaker_volume: 70,
 };
@@ -96,6 +106,7 @@ function normalizeDeviceControls(raw: SnapshotPayload["device_controls"]): Devic
     audio_output_enabled: typeof raw.audio_output_enabled === "boolean" ? raw.audio_output_enabled : true,
     idle_look_sweep_enabled:
       typeof raw.idle_look_sweep_enabled === "boolean" ? raw.idle_look_sweep_enabled : false,
+    yolo_follow_enabled: typeof raw.yolo_follow_enabled === "boolean" ? raw.yolo_follow_enabled : true,
     daemon_mic_input_volume:
       typeof raw.daemon_mic_input_volume === "number" && Number.isFinite(raw.daemon_mic_input_volume)
         ? Math.round(raw.daemon_mic_input_volume)
@@ -119,6 +130,8 @@ const initial: AppSocketState = {
   modesTools: { mode: null, tools: [] },
   conversation: [],
   deviceControls: { ...defaultDeviceControls },
+  yoloVision: { import_ok: false, weights_path: null, worker_running: false },
+  yoloDetections: null,
 };
 
 type Action =
@@ -133,7 +146,33 @@ type Action =
   | { kind: "voice_pipeline"; v: PipeInfo }
   | { kind: "modes_tools"; v: { mode: string | null; tools: string[] } }
   | { kind: "conversation"; v: { role: string; content: string }[] }
-  | { kind: "device_controls"; v: DeviceControlsState };
+  | { kind: "device_controls"; v: DeviceControlsState }
+  | { kind: "yolo_detections"; v: YoloDetectionsPayload };
+
+function normalizeVoicePipeline(raw: unknown): PipeInfo {
+  if (!raw || typeof raw !== "object") {
+    return { mlx_whisper_import_ok: false, mlx_whisper_import_error: null, mlx_live_ready: false };
+  }
+  const o = raw as Record<string, unknown>;
+  const err = o.mlx_whisper_import_error;
+  return {
+    mlx_whisper_import_ok: typeof o.mlx_whisper_import_ok === "boolean" ? o.mlx_whisper_import_ok : false,
+    mlx_whisper_import_error: typeof err === "string" ? err : null,
+    mlx_live_ready: typeof o.mlx_live_ready === "boolean" ? o.mlx_live_ready : false,
+  };
+}
+
+function normalizeYoloVision(raw: unknown): YoloVisionState {
+  if (!raw || typeof raw !== "object") {
+    return { import_ok: false, weights_path: null, worker_running: false };
+  }
+  const o = raw as Record<string, unknown>;
+  return {
+    import_ok: typeof o.import_ok === "boolean" ? o.import_ok : false,
+    weights_path: typeof o.weights_path === "string" ? o.weights_path : null,
+    worker_running: typeof o.worker_running === "boolean" ? o.worker_running : false,
+  };
+}
 
 function reducer(s: AppSocketState, a: Action): AppSocketState {
   switch (a.kind) {
@@ -148,13 +187,14 @@ function reducer(s: AppSocketState, a: Action): AppSocketState {
         ...s,
         layout: a.v.layout,
         llmConfig: a.v.llm_config,
-        voicePipeline: a.v.voice_pipeline,
+        voicePipeline: normalizeVoicePipeline(a.v.voice_pipeline),
         voiceStatus: a.v.voice_status,
         voiceMeter: a.v.voice_meter,
         modesTools: a.v.modes_tools,
         conversation: a.v.conversation,
         robotState: a.v.robot_state,
         deviceControls: normalizeDeviceControls(a.v.device_controls),
+        yoloVision: normalizeYoloVision(a.v.yolo_vision),
       };
     case "layout":
       return { ...s, layout: a.v };
@@ -172,6 +212,8 @@ function reducer(s: AppSocketState, a: Action): AppSocketState {
       return { ...s, conversation: a.v };
     case "device_controls":
       return { ...s, deviceControls: a.v };
+    case "yolo_detections":
+      return { ...s, yoloDetections: a.v };
     default:
       return s;
   }
@@ -245,6 +287,7 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
           const bot = msg.bot_awake;
           const audio = msg.audio_output_enabled;
           const sweep = msg.idle_look_sweep_enabled;
+          const yfollow = msg.yolo_follow_enabled;
           const dmic = msg.daemon_mic_input_volume;
           const dspk = msg.daemon_speaker_volume;
           dispatch({
@@ -255,12 +298,36 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
               bot_awake: typeof bot === "boolean" ? bot : true,
               audio_output_enabled: typeof audio === "boolean" ? audio : true,
               idle_look_sweep_enabled: typeof sweep === "boolean" ? sweep : false,
+              yolo_follow_enabled: typeof yfollow === "boolean" ? yfollow : true,
               daemon_mic_input_volume:
                 typeof dmic === "number" && Number.isFinite(dmic) ? Math.round(dmic) : 70,
               daemon_speaker_volume:
                 typeof dspk === "number" && Number.isFinite(dspk) ? Math.round(dspk) : 70,
             },
           });
+          return;
+        }
+        if (t === "yolo_detections") {
+          const fh = msg.frame_hw;
+          const tracks = msg.tracks;
+          const tms = msg.t_ms;
+          if (
+            Array.isArray(fh) &&
+            fh.length === 2 &&
+            typeof fh[0] === "number" &&
+            typeof fh[1] === "number" &&
+            Array.isArray(tracks) &&
+            typeof tms === "number"
+          ) {
+            dispatch({
+              kind: "yolo_detections",
+              v: {
+                frame_hw: [fh[0], fh[1]],
+                tracks: tracks as YoloDetectionsPayload["tracks"],
+                t_ms: tms,
+              },
+            });
+          }
           return;
         }
         if (t === "layout") {
@@ -284,7 +351,7 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
         }
         if (t === "voice_pipeline") {
           const { type: _x, ...pi } = msg;
-          dispatch({ kind: "voice_pipeline", v: pi as unknown as PipeInfo });
+          dispatch({ kind: "voice_pipeline", v: normalizeVoicePipeline(pi) });
           return;
         }
         if (t === "modes_tools") {

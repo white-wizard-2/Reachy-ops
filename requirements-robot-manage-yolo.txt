@@ -1,0 +1,6 @@
+# Optional: YOLO-MLX (Apple Silicon + MLX). Install on the host that runs robot_manage.
+# Convert weights first, then set ROBOT_MANAGE_YOLO_NPZ to the .npz or .safetensors path.
+# See https://github.com/thewebAI/yolo-mlx
+# If ``import mlx`` fails with missing ``libmlx.dylib``, avoid the old ``mlx-image`` wheel (pins
+# mlx 0.24.x) or run: pip install --force-reinstall --no-cache-dir mlx mlx-metal
+yolo-mlx[tracking]>=0.2.0

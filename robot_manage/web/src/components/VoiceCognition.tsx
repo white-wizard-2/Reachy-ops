@@ -14,6 +14,7 @@ type LlmConfig = { model: string; ollama_host: string };
 
 type PipeInfo = {
   mlx_whisper_import_ok: boolean;
+  mlx_whisper_import_error: string | null;
   mlx_live_ready: boolean;
 };
 
@@ -320,7 +321,9 @@ export function VoiceCognition() {
           <CardTitle className="font-display text-lg tracking-wide">Live — MLX + Ollama (context)</CardTitle>
           <CardDescription className="text-xs leading-relaxed text-muted-foreground/95">
             {pipe?.mlx_whisper_import_ok === false
-              ? "This server cannot import mlx_whisper — install Apple Silicon deps (requirements-robot-manage-mlx.txt)."
+              ? pipe?.mlx_whisper_import_error
+                ? `mlx_whisper import failed: ${pipe.mlx_whisper_import_error}`
+                : "This server cannot import mlx_whisper — reinstall deps (requirements-robot-manage.txt on macOS includes mlx-whisper)."
               : pipe?.mlx_live_ready
                 ? "Speak in phrases; the server waits for silence before transcribing and updating the LLM context. Live stream uses WebSocket voice_live messages."
                 : "Click Start live — the MLX pipeline starts on first connect when the robot mic ring is active."}

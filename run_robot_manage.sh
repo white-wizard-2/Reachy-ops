@@ -12,6 +12,8 @@ export OLLAMA_VOICE_SAY=1
 export OLLAMA_VOICE_SAY_TARGET="${OLLAMA_VOICE_SAY_TARGET:-reachy}"
 # Optional: OLLAMA_VOICE_JSON_MOVES=1 — legacy JSON speech+move; default plain text TTS (see pollen-robotics/reachy_mini_conversation_app for tool-queued motion).
 export ROBOT_MANAGE_REACTION_MOVES="${ROBOT_MANAGE_REACTION_MOVES:-1}"
+# Optional: Apple Silicon host only — converted YOLO26 weights for yolo-mlx ByteTrack + UI overlay:
+# export ROBOT_MANAGE_YOLO_NPZ="$HOME/models/yolo26n.npz"
 
 if [[ ! -d .venv ]]; then
   python3 -m venv .venv
@@ -20,6 +22,23 @@ fi
 source .venv/bin/activate
 
 pip install -r requirements.txt -r requirements-robot-manage.txt
+if [[ -f requirements-robot-manage-mlx.txt ]]; then
+  pip install -r requirements-robot-manage-mlx.txt
+fi
+if [[ -f requirements-robot-manage-yolo.txt ]]; then
+  pip install -r requirements-robot-manage-yolo.txt
+fi
+
+# Broken/partial mlx-metal leaves ``mlx/lib`` without ``libmlx.dylib`` → ImportError at runtime.
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  MLX_LIBMLX="$(
+    python -c 'import pathlib, site; p = pathlib.Path(site.getsitepackages()[0]) / "mlx" / "lib" / "libmlx.dylib"; print(p.resolve() if p.is_file() else "")'
+  )"
+  if [[ -z "${MLX_LIBMLX}" ]]; then
+    echo "robot_manage: mlx/lib/libmlx.dylib missing — reinstalling mlx + mlx-metal" >&2
+    pip install --force-reinstall --no-cache-dir "mlx>=0.31.2" "mlx-metal>=0.31.2"
+  fi
+fi
 
 WEB="$ROOT/robot_manage/web"
 if [[ -f "$WEB/package-lock.json" ]]; then

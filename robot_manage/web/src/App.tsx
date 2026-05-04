@@ -44,7 +44,16 @@ export default function App() {
           </CardContent>
         </Card>
       ) : primaryFeed ? (
-        <CameraViewport feed={primaryFeed} showBrand className="h-full min-h-0 w-full min-w-0" />
+        <CameraViewport
+          feed={primaryFeed}
+          showBrand
+          className="h-full min-h-0 w-full min-w-0"
+          yoloVision={state.yoloVision}
+          yoloDetections={state.yoloDetections}
+          yoloFollowEnabled={state.deviceControls.yolo_follow_enabled}
+          cameraEnabled={state.deviceControls.camera_enabled}
+          onToggleYoloFollow={() => send({ type: "device_toggle", device: "yolo_follow" })}
+        />
       ) : (
         <Card className="viewport-glass flex h-full min-h-0 w-full min-w-0 flex-col">
           <CardHeader className="shrink-0 space-y-3 pb-2">

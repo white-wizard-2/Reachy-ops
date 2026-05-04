@@ -31,6 +31,7 @@ class MiniCameraPublisher:
         self._period_s = 1.0 / float(max_fps) if max_fps > 0 else 0.0
         self._lock = threading.Lock()
         self._latest: Optional[bytes] = None
+        self._latest_bgr: Optional[np.ndarray] = None
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -46,10 +47,20 @@ class MiniCameraPublisher:
         if self._thread is not None:
             self._thread.join(timeout=5.0)
             self._thread = None
+        with self._lock:
+            self._latest_bgr = None
 
     def get_latest_jpeg(self) -> Optional[bytes]:
         with self._lock:
             return self._latest
+
+    def get_latest_bgr_copy(self) -> Optional[np.ndarray]:
+        """Thread-safe copy of the last BGR frame (for YOLO / vision workers)."""
+
+        with self._lock:
+            if self._latest_bgr is None:
+                return None
+            return self._latest_bgr.copy()
 
     def _grab_frame(self) -> Optional[np.ndarray]:
         for _ in range(_FRAME_GRAB_ATTEMPTS):
@@ -70,6 +81,7 @@ class MiniCameraPublisher:
             jpeg = bgr_frame_to_jpeg_bytes(frame, quality=self._jpeg_quality)
             with self._lock:
                 self._latest = jpeg
+                self._latest_bgr = frame.copy()
             elapsed = time.monotonic() - t0
             sleep_left = self._period_s - elapsed
             if sleep_left > 0:

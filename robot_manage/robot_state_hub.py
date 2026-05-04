@@ -4,9 +4,29 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Final
 
 import httpx
+
+# ``with_doa`` / passive / full target matrices have triggered HTTP 500 on some daemon builds.
+# Try a small set first (enough for ``RobotStatePanel``), then strip further, then bare GET.
+_STATE_FULL_QUERY_TRIES: Final[tuple[dict[str, str], ...]] = (
+    {
+        "with_control_mode": "true",
+        "with_head_pose": "true",
+        "with_head_joints": "true",
+        "with_body_yaw": "true",
+        "with_antenna_positions": "true",
+        "use_pose_matrix": "false",
+    },
+    {
+        "with_control_mode": "true",
+        "with_head_pose": "true",
+        "with_head_joints": "true",
+        "with_body_yaw": "true",
+    },
+    {},
+)
 
 
 class RobotStateHub:
@@ -35,20 +55,6 @@ class RobotStateHub:
         }
 
     async def poll_once(self, client: httpx.AsyncClient) -> None:
-        params = {
-            "with_control_mode": "true",
-            "with_head_pose": "true",
-            "with_target_head_pose": "true",
-            "with_head_joints": "true",
-            "with_target_head_joints": "true",
-            "with_body_yaw": "true",
-            "with_target_body_yaw": "true",
-            "with_antenna_positions": "true",
-            "with_target_antenna_positions": "true",
-            "with_passive_joints": "true",
-            "with_doa": "true",
-            "use_pose_matrix": "false",
-        }
         url = self._get_state_full_url()
         if url is None:
             async with self._lock:
@@ -59,12 +65,15 @@ class RobotStateHub:
 
         new_data: dict[str, Any] | None = None
         err: str | None = None
-        try:
-            r = await client.get(url, params=params, timeout=8.0)
-            r.raise_for_status()
-            new_data = r.json()
-        except Exception as e:
-            err = f"{type(e).__name__}: {e}"
+        for params in _STATE_FULL_QUERY_TRIES:
+            try:
+                r = await client.get(url, params=params, timeout=8.0)
+                r.raise_for_status()
+                new_data = r.json()
+                err = None
+                break
+            except Exception as e:  # noqa: BLE001
+                err = f"{type(e).__name__}: {e}"
 
         async with self._lock:
             if new_data is not None:

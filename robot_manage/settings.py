@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 
 def ollama_base_url() -> str:
@@ -186,3 +187,22 @@ def ollama_voice_say_post_ms() -> float:
     """Ms to keep mic gated after each TTS batch (reverb tail). Env: ``OLLAMA_VOICE_SAY_POST_MS`` (default ``500``)."""
 
     return float(os.environ.get("OLLAMA_VOICE_SAY_POST_MS", "500"))
+
+
+def yolo_mlx_weights_path() -> str | None:
+    """Path to converted YOLO26 weights (``.npz`` / ``.safetensors``). Env ``ROBOT_MANAGE_YOLO_NPZ``."""
+
+    raw = os.environ.get("ROBOT_MANAGE_YOLO_NPZ", "").strip()
+    if not raw:
+        return None
+    p = Path(raw).expanduser()
+    return str(p.resolve()) if p.is_file() else None
+
+
+def yolo_mlx_import_ok() -> bool:
+    try:
+        import yolo26mlx  # noqa: F401
+
+        return True
+    except Exception:
+        return False

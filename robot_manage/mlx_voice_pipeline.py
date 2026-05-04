@@ -12,6 +12,7 @@ import numpy as np
 from robot_manage.idle_look_sweep import run_idle_look_sweep_pass
 from robot_manage.llm_say import LlmSayRunner, pull_complete_sentences
 from robot_manage.mic_buffer import RobotMicRingBuffer
+from robot_manage.mlx_whisper_status import mlx_whisper_import_probe
 from robot_manage.motion_reactions import select_reaction_move_for_speech
 from robot_manage.move_catalog import VoiceAssistantJsonError, parse_voice_assistant_output
 from robot_manage.ollama_voice import (
@@ -159,9 +160,8 @@ def try_create_mlx_pipeline(
     mini: Any | None = None,
     controls: dict[str, Any] | None = None,
 ) -> MlxLiveVoicePipeline | None:
-    try:
-        import mlx_whisper  # noqa: F401
-    except ImportError:
+    ok, _err = mlx_whisper_import_probe()
+    if not ok:
         return None
     return MlxLiveVoicePipeline(buf, mini=mini, controls=controls)
 
@@ -375,8 +375,8 @@ class MlxLiveVoicePipeline:
             await self._client.aclose()
             self._client = None
 
-    async def _stop_move_playback(self, *, cancel_daemon_motion: bool = True) -> None:
-        """Stop optional ``RecordedMoves`` playback; optionally request daemon ``cancel_move``."""
+    async def _stop_move_playback(self) -> None:
+        """Stop optional ``RecordedMoves`` playback; ``cancel_move`` only if a move task was active."""
 
         t = self._move_play_task
         self._move_play_task = None
@@ -391,15 +391,6 @@ class MlxLiveVoicePipeline:
             try:
                 await t
             except asyncio.CancelledError:
-                pass
-        if (
-            cancel_daemon_motion
-            and not had_running_play
-            and self._mini is not None
-        ):
-            try:
-                self._mini.cancel_move()
-            except Exception:
                 pass
 
     def trigger_idle_look_sweep(self) -> None:
@@ -426,7 +417,7 @@ class MlxLiveVoicePipeline:
         if mini is None:
             return
         try:
-            await self._stop_move_playback(cancel_daemon_motion=False)
+            await self._stop_move_playback()
         except asyncio.CancelledError:
             raise
         except Exception:

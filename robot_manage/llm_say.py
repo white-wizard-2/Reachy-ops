@@ -7,6 +7,7 @@ import io
 import logging
 import shutil
 import subprocess
+import time
 from collections.abc import Callable
 from typing import Final, Protocol
 from uuid import uuid4
@@ -82,6 +83,17 @@ def say_binary_path() -> str | None:
     """Absolute path to ``say`` when present on ``PATH``."""
 
     return shutil.which("say")
+
+
+def mp3_duration_seconds(data: bytes) -> float:
+    """Decode MP3 length from in-memory bytes (Reachy TTS queue pacing)."""
+
+    from mutagen.mp3 import MP3  # noqa: PLC0415
+
+    m = MP3(io.BytesIO(data))
+    if m.info is None or not hasattr(m.info, "length"):
+        raise RuntimeError("mutagen could not read MP3 duration")
+    return float(m.info.length)
 
 
 def say(text: str, *, voice: str | None = None) -> None:
@@ -211,3 +223,13 @@ class LlmSayRunner:
                 raise RuntimeError("Reachy daemon upload did not return a sound path")
             play = await client.post("/api/media/play_sound", json={"file": filename})
             play.raise_for_status()
+            dur = mp3_duration_seconds(data)
+            # Daemon ``play_sound`` replaces the previous playbin clip; wait this clip out before
+            # the next sentence's upload/play so full responses play in order.
+            pad_s = 0.18
+            t_end = time.monotonic() + dur + pad_s
+            while True:
+                rem = t_end - time.monotonic()
+                if rem <= 0:
+                    break
+                await asyncio.sleep(min(rem, 0.25))

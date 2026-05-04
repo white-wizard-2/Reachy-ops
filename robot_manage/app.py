@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -33,8 +34,14 @@ from robot_manage.daemon_preflight import ensure_reachy_mini_daemon_backend_runn
 from robot_manage.jpeg_util import bgr_frame_to_jpeg_bytes
 from robot_manage.mic_buffer import MicCollectorThread, RobotMicRingBuffer
 from robot_manage.mlx_voice_pipeline import ensure_mlx_voice_pipeline, try_create_mlx_pipeline
+from robot_manage.mlx_whisper_status import mlx_whisper_import_probe
 from robot_manage.robot_state_hub import RobotStateHub, robot_state_poll_loop
-from robot_manage.settings import ollama_base_url, ollama_model
+from robot_manage.settings import (
+    ollama_base_url,
+    ollama_model,
+    yolo_mlx_import_ok,
+    yolo_mlx_weights_path,
+)
 
 _MJPEG_BOUNDARY = b"frame"
 _STREAM_FRAME_INTERVAL_S = 1.0 / 25.0
@@ -65,6 +72,8 @@ def create_app(
     static_dir: Optional[Path] = None,
     skip_daemon_wake: bool = False,
 ) -> FastAPI:
+    logging.getLogger("reachy_mini.reachy_mini").setLevel(logging.WARNING)
+
     static_path = static_dir if static_dir is not None else Path(__file__).resolve().parent / "static"
     mini_ref: list[Optional[ReachyMini]] = [None]
     pub_ref: list[Optional[MiniCameraPublisher]] = [None]
@@ -81,6 +90,8 @@ def create_app(
         "daemon_speaker_volume": 70,
         "daemon_mic_input_volume": 70,
         "_black_jpeg": None,
+        "yolo_follow_enabled": True,
+        "yolo_worker": None,
     }
     ui_hub = AppUiHub()
     mic_state["voice_ui_notify"] = ui_hub.voice_notify
@@ -106,6 +117,7 @@ def create_app(
                 "bot_awake": bool(mic_state.get("bot_awake", True)),
                 "audio_output_enabled": not bool(mic_state.get("audio_output_muted", False)),
                 "idle_look_sweep_enabled": bool(mic_state.get("idle_look_sweep_enabled", False)),
+                "yolo_follow_enabled": bool(mic_state.get("yolo_follow_enabled", True)),
                 "daemon_speaker_volume": int(mic_state.get("daemon_speaker_volume", 70)),
                 "daemon_mic_input_volume": int(mic_state.get("daemon_mic_input_volume", 70)),
             }
@@ -146,6 +158,7 @@ def create_app(
             "bot",
             "audio_output",
             "idle_look_sweep",
+            "yolo_follow",
         ):
             return
         mini = mini_ref[0]
@@ -194,6 +207,8 @@ def create_app(
                 pipe = await ensure_mlx_voice_pipeline(mic_state)
                 if pipe is not None:
                     pipe.trigger_idle_look_sweep()
+        elif dev == "yolo_follow":
+            mic_state["yolo_follow_enabled"] = not bool(mic_state.get("yolo_follow_enabled", True))
         await broadcast_device_controls()
 
     async def build_ui_snapshot() -> dict[str, Any]:
@@ -219,14 +234,10 @@ def create_app(
                 "buffering": True,
                 "buffered_seconds_estimate": round(buf.approx_buffered_seconds(), 2),
             }
-        try:
-            import mlx_whisper  # noqa: F401
-
-            mlx_ok = True
-        except ImportError:
-            mlx_ok = False
+        mlx_ok, mlx_err = mlx_whisper_import_probe()
         voice_pipeline = {
             "mlx_whisper_import_ok": mlx_ok,
+            "mlx_whisper_import_error": mlx_err,
             "mlx_live_ready": pipe is not None,
         }
         if pipe is None:
@@ -237,6 +248,9 @@ def create_app(
             conversation = pipe.conversation_messages_for_client()
         robot_state = state_hub.public_message()
         md = mic_state["mic_disabled"]
+        yw = mic_state.get("yolo_worker")
+        yolo_wp = yolo_mlx_weights_path()
+        worker_alive = bool(getattr(yw, "is_alive", lambda: False)())
         return {
             "layout": layout,
             "llm_config": llm_config,
@@ -246,12 +260,18 @@ def create_app(
             "modes_tools": modes_tools,
             "conversation": conversation,
             "robot_state": robot_state,
+            "yolo_vision": {
+                "import_ok": yolo_mlx_import_ok(),
+                "weights_path": yolo_wp,
+                "worker_running": worker_alive,
+            },
             "device_controls": {
                 "mic_enabled": not md.is_set(),
                 "camera_enabled": bool(mic_state.get("camera_enabled", True)),
                 "bot_awake": bool(mic_state.get("bot_awake", True)),
                 "audio_output_enabled": not bool(mic_state.get("audio_output_muted", False)),
                 "idle_look_sweep_enabled": bool(mic_state.get("idle_look_sweep_enabled", False)),
+                "yolo_follow_enabled": bool(mic_state.get("yolo_follow_enabled", True)),
                 "daemon_speaker_volume": int(mic_state.get("daemon_speaker_volume", 70)),
                 "daemon_mic_input_volume": int(mic_state.get("daemon_mic_input_volume", 70)),
             },
@@ -282,16 +302,12 @@ def create_app(
                     }
                 await ui_hub.broadcast_json({"type": "voice_status", **st})
             if tick % 40 == 0:
-                try:
-                    import mlx_whisper  # noqa: F401
-
-                    mlx_ok = True
-                except ImportError:
-                    mlx_ok = False
+                mlx_ok, mlx_err = mlx_whisper_import_probe()
                 await ui_hub.broadcast_json(
                     {
                         "type": "voice_pipeline",
                         "mlx_whisper_import_ok": mlx_ok,
+                        "mlx_whisper_import_error": mlx_err,
                         "mlx_live_ready": mic_state.get("mlx_pipeline") is not None,
                     }
                 )
@@ -321,6 +337,21 @@ def create_app(
         mini_ref[0] = mini
         pub_ref[0] = pub
         mic_state["mini"] = mini
+        loop = asyncio.get_running_loop()
+        yolo_wp = yolo_mlx_weights_path()
+        if yolo_wp and yolo_mlx_import_ok():
+            from robot_manage.yolo_mlx_worker import YoloMlxVisionWorker
+
+            yw = YoloMlxVisionWorker(
+                loop=loop,
+                broadcast_json=ui_hub.broadcast_json,
+                get_bgr=pub.get_latest_bgr_copy,
+                mini_ref=mini_ref,
+                mic_state=mic_state,
+                weights_path=yolo_wp,
+            )
+            yw.start()
+            mic_state["yolo_worker"] = yw
         if mini.media.audio is not None:
             await asyncio.to_thread(mini.media.start_recording)
             mic_buf = RobotMicRingBuffer()
@@ -379,6 +410,10 @@ def create_app(
             if mlx_pipe is not None:
                 await mlx_pipe.aclose()
                 mic_state["mlx_pipeline"] = None
+            yolo_w = mic_state.get("yolo_worker")
+            if yolo_w is not None:
+                yolo_w.stop()
+                mic_state["yolo_worker"] = None
             col = mic_state.get("collector")
             if col is not None:
                 col.stop_join()
@@ -402,15 +437,10 @@ def create_app(
 
     @app.get("/api/voice/pipeline")
     def voice_pipeline_info() -> dict[str, Any]:
-        mlx_ok = False
-        try:
-            import mlx_whisper  # noqa: F401
-
-            mlx_ok = True
-        except ImportError:
-            mlx_ok = False
+        mlx_ok, mlx_err = mlx_whisper_import_probe()
         return {
             "mlx_whisper_import_ok": mlx_ok,
+            "mlx_whisper_import_error": mlx_err,
             "mlx_live_ready": mic_state.get("mlx_pipeline") is not None,
         }
 
@@ -456,11 +486,9 @@ def create_app(
                     "No robot microphone ring (Reachy media has no audio for this session).",
                     status_code=503,
                 )
-            return PlainTextResponse(
-                "MLX Whisper is not available (install mlx-whisper on Apple Silicon: "
-                "pip install -r requirements-robot-manage-mlx.txt).",
-                status_code=503,
-            )
+            _, mlx_err = mlx_whisper_import_probe()
+            detail = mlx_err or "Import failed (see server log / reinstall mlx-whisper on macOS)."
+            return PlainTextResponse(f"MLX Whisper is not available. {detail}", status_code=503)
 
         q = await pipe.subscribe()
 
@@ -602,9 +630,11 @@ def create_app(
                         if buf is None:
                             detail = "No robot microphone ring (Reachy media has no audio for this session)."
                         else:
+                            _, mlx_err = mlx_whisper_import_probe()
                             detail = (
-                                "MLX Whisper is not available (install mlx-whisper on Apple Silicon: "
-                                "pip install -r requirements-robot-manage-mlx.txt)."
+                                f"MLX Whisper is not available. {mlx_err}"
+                                if mlx_err
+                                else "MLX Whisper is not available (import failed; check server logs)."
                             )
                         await websocket.send_json(
                             {"type": "voice_live", "event": "error", "message": detail}
