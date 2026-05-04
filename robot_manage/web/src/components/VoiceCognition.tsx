@@ -21,6 +21,7 @@ type ChatMessage = { role: string; content: string };
 
 const VOICE_SESSION_LIVE = "reachy_ops_voice_live";
 const VOICE_SESSION_UI = "reachy_ops_voice_ui_v1";
+export const REACHY_MODES_TOOLS_EVENT = "reachy:modes-tools";
 
 type SsePayload =
   | { event: "meta"; voice?: string }
@@ -30,7 +31,17 @@ type SsePayload =
   | { event: "llm_token"; t: string }
   | { event: "llm_round_start" }
   | { event: "llm_round_end" }
+  | { event: "modes_tools"; mode: string | null; tools: string[] }
   | { event: "error"; message: string };
+
+function dispatchModesToolsFromSse(ev: SsePayload) {
+  if (ev.event !== "modes_tools") return;
+  window.dispatchEvent(
+    new CustomEvent(REACHY_MODES_TOOLS_EVENT, {
+      detail: { mode: ev.mode, tools: Array.isArray(ev.tools) ? ev.tools : [] },
+    }),
+  );
+}
 
 function parseSseBuffer(buffer: string): { events: SsePayload[]; rest: string } {
   const events: SsePayload[] = [];
@@ -143,7 +154,7 @@ function MicHistogram({ levels, peak }: { levels: number[]; peak: number }) {
 
 function ConversationPanel({ messages }: { messages: ChatMessage[] }) {
   return (
-    <div className="max-h-[min(48vh,420px)] space-y-2 overflow-y-auto rounded-md border border-border/50 bg-black/40 p-3">
+    <div className="max-h-[min(48vh,420px)] space-y-2 overflow-y-auto rounded-md border border-border/50 bg-black/40 p-3 2xl:max-h-[min(72vh,800px)]">
       {messages.length === 0 ? (
         <p className="font-mono text-xs text-muted-foreground/70">No messages yet.</p>
       ) : (
@@ -348,6 +359,7 @@ export function VoiceCognition() {
           if (ev.event === "llm_round_start") setLlmOut("");
           if (ev.event === "llm_token") setLlmOut((o) => o + ev.t);
           if (ev.event === "error") setLiveErr(ev.message);
+          dispatchModesToolsFromSse(ev);
         }
       }
       const tail = parseSseBuffer(carry + "\n\n");
@@ -361,6 +373,7 @@ export function VoiceCognition() {
         if (ev.event === "llm_round_start") setLlmOut("");
         if (ev.event === "llm_token") setLlmOut((o) => o + ev.t);
         if (ev.event === "error") setLiveErr(ev.message);
+        dispatchModesToolsFromSse(ev);
       }
     } catch (e) {
       if ((e as Error).name !== "AbortError") {
@@ -398,7 +411,7 @@ export function VoiceCognition() {
             cognition layer
           </p>
           <h2 className="font-display text-2xl font-bold tracking-wide text-glow md:text-3xl">VOICE · COGNITION</h2>
-          <p className="mt-1 max-w-2xl font-sans text-sm text-muted-foreground">
+          <p className="mt-1 font-sans text-sm text-muted-foreground md:max-w-[min(100%,52rem)]">
             MLX Whisper segments speech by <strong className="text-foreground/90">silence</strong> (see{" "}
             <code className="font-mono text-[10px]">MLX_VOICE_*</code> env in run script), then sends each utterance to
             Ollama <code className="font-mono text-[10px]">/api/chat</code> with <strong className="text-foreground/90">full conversation context</strong>.
@@ -460,8 +473,8 @@ export function VoiceCognition() {
           <Separator className="mt-3 bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
         </CardHeader>
         <CardContent className="relative z-10 space-y-4">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <div className="space-y-2">
+          <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3 2xl:items-start">
+            <div className="min-w-0 space-y-2">
               <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Latest utterance</p>
               <pre className="min-h-[4.5rem] whitespace-pre-wrap break-words rounded-md border border-border/50 bg-black/45 p-3 font-mono text-xs text-foreground/95">
                 {listening ? (
@@ -473,19 +486,19 @@ export function VoiceCognition() {
                 )}
               </pre>
             </div>
-            <div className="space-y-2">
+            <div className="min-w-0 space-y-2">
               <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Assistant (streaming)</p>
               <pre
                 ref={llmPreRef}
-                className="max-h-[min(28vh,240px)] min-h-[4.5rem] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border/50 bg-black/45 p-3 font-mono text-xs text-foreground/95"
+                className="max-h-[min(40vh,320px)] min-h-[4.5rem] overflow-y-auto whitespace-pre-wrap break-words rounded-md border border-border/50 bg-black/45 p-3 font-mono text-xs text-foreground/95 2xl:max-h-[min(55vh,480px)]"
               >
                 {llmOut || <span className="text-muted-foreground/55">{liveOn ? "…" : "Idle."}</span>}
               </pre>
             </div>
-          </div>
-          <div className="space-y-2">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Ollama conversation context</p>
-            <ConversationPanel messages={conversation} />
+            <div className="min-w-0 space-y-2 lg:col-span-2 2xl:col-span-1">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Ollama conversation context</p>
+              <ConversationPanel messages={conversation} />
+            </div>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button type="button" className="font-display tracking-[0.14em]" disabled={liveOn} onClick={() => void startLive()}>

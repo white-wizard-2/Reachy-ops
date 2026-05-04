@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from reachy_mini import ReachyMini
 
 from robot_manage.camera_feed import MiniCameraPublisher
@@ -30,6 +31,11 @@ from robot_manage.settings import ollama_base_url, ollama_model
 
 _MJPEG_BOUNDARY = b"frame"
 _STREAM_FRAME_INTERVAL_S = 1.0 / 25.0
+
+
+class VoiceModesToolsBody(BaseModel):
+    mode: Optional[str] = None
+    tools: list[str] = Field(default_factory=list)
 
 
 def create_app(
@@ -119,6 +125,29 @@ def create_app(
         if pipe is None:
             return {"messages": []}
         return {"messages": pipe.conversation_messages_for_client()}
+
+    @app.get("/api/voice/modes-tools")
+    async def voice_modes_tools_get() -> dict[str, Any]:
+        pipe = mic_state.get("mlx_pipeline")
+        if pipe is None:
+            pipe = await ensure_mlx_voice_pipeline(mic_state)
+        if pipe is None:
+            return {"mode": None, "tools": []}
+        return await pipe.modes_tools_snapshot()
+
+    @app.put("/api/voice/modes-tools")
+    async def voice_modes_tools_put(body: VoiceModesToolsBody) -> dict[str, Any]:
+        pipe = await ensure_mlx_voice_pipeline(mic_state)
+        if pipe is None:
+            raise HTTPException(
+                status_code=503,
+                detail="MLX voice pipeline is not available.",
+            )
+        try:
+            await pipe.replace_modes_tools(mode=body.mode, tools=body.tools)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        return await pipe.modes_tools_snapshot()
 
     @app.get("/api/voice/live")
     async def voice_live() -> StreamingResponse:

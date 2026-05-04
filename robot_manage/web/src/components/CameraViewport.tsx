@@ -10,15 +10,15 @@ function statusBadgeVariant(status: CameraFeedInfo["status"]) {
   return "ghost" as const;
 }
 
-export function CameraViewport({ feed }: { feed: CameraFeedInfo }) {
+export function CameraViewport({ feed, className }: { feed: CameraFeedInfo; className?: string }) {
   const showStream = feed.stream_path != null && feed.status === "live";
-  const showPlaceholder = !showStream;
 
   return (
     <Card
       className={cn(
-        "viewport-glass relative overflow-hidden transition-shadow duration-500",
+        "viewport-glass relative flex h-full min-h-0 flex-col overflow-hidden transition-shadow duration-500",
         showStream && "shadow-[0_0_48px_-8px_hsl(var(--primary)/0.35)]",
+        className,
       )}
     >
       <div className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-primary/15 blur-2xl" />
@@ -31,7 +31,7 @@ export function CameraViewport({ feed }: { feed: CameraFeedInfo }) {
             </p>
             <CardTitle className="font-display text-lg tracking-wide md:text-xl">{feed.label}</CardTitle>
             <CardDescription className="font-mono text-xs text-muted-foreground/90">
-              {feed.id === "primary" ? "Main scene tensor" : "Reserved stereoscopic lane"}
+              Robot camera (MJPEG)
             </CardDescription>
           </div>
           <Badge variant={statusBadgeVariant(feed.status)} className="font-mono uppercase tracking-wider">
@@ -40,11 +40,11 @@ export function CameraViewport({ feed }: { feed: CameraFeedInfo }) {
         </div>
         <Separator className="bg-gradient-to-r from-transparent via-primary/25 to-transparent" />
       </CardHeader>
-      <CardContent className="relative z-10 px-4 pb-4 pt-0 md:px-6 md:pb-6">
+      <CardContent className="relative z-10 flex min-h-0 flex-1 flex-col px-4 pb-4 pt-0 md:px-6 md:pb-6">
         <div
           className={cn(
-            "relative overflow-hidden rounded-lg border border-border/60 bg-black/80",
-            "aspect-video w-full",
+            "relative w-full shrink-0 overflow-hidden rounded-lg border border-border/60 bg-black/80",
+            showStream ? "aspect-video" : "min-h-0 flex-1",
           )}
         >
           {showStream ? (
@@ -53,7 +53,7 @@ export function CameraViewport({ feed }: { feed: CameraFeedInfo }) {
               <img
                 src={feed.stream_path!}
                 alt={feed.label}
-                className="relative z-0 h-full w-full object-contain"
+                className="absolute inset-0 z-0 h-full w-full object-contain"
               />
               <div className="pointer-events-none absolute inset-0 rounded-lg ring-1 ring-inset ring-primary/20" />
             </>
@@ -68,7 +68,7 @@ export function CameraViewport({ feed }: { feed: CameraFeedInfo }) {
 
 function Placeholder({ detail, channel }: { detail: string | null; channel: string }) {
   return (
-    <div className="relative flex h-full min-h-[200px] flex-col items-center justify-center gap-4 bg-[radial-gradient(ellipse_at_center,_hsl(var(--secondary)/0.12)_0%,_transparent_65%)] p-6 text-center md:min-h-[240px]">
+    <div className="relative flex h-full min-h-[12rem] flex-col items-center justify-center gap-4 bg-[radial-gradient(ellipse_at_center,_hsl(var(--secondary)/0.12)_0%,_transparent_65%)] p-6 text-center">
       <div className="absolute inset-0 bg-grid-fade bg-[length:24px_24px] opacity-60" />
       <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-lg">
         <div className="absolute left-0 top-0 h-px w-full animate-scan bg-gradient-to-r from-transparent via-primary/50 to-transparent opacity-40" />

@@ -30,6 +30,7 @@ from robot_manage.settings import (
     ollama_voice_say_post_ms,
     ollama_voice_text_system_prompt,
 )
+from robot_manage.voice_command_parser import format_command_speech, try_parse_voice_command
 from robot_manage.wav_utils import stereo_float32_to_mono_float32
 
 _mlx_ensure_lock = asyncio.Lock()
@@ -161,6 +162,9 @@ class MlxLiveVoicePipeline:
         self._say = LlmSayRunner(mic_hooks=self)
         self._move_spec_this_turn: tuple[str, str] | None = None
         self._move_play_task: asyncio.Task[None] | None = None
+        self._modes_tools_lock = asyncio.Lock()
+        self._active_mode: str | None = None
+        self._tools_on: set[str] = set()
 
     async def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=512)
@@ -173,12 +177,65 @@ class MlxLiveVoicePipeline:
             )
         except asyncio.QueueFull:
             pass
+        async with self._modes_tools_lock:
+            mt = {
+                "event": "modes_tools",
+                "mode": self._active_mode,
+                "tools": sorted(self._tools_on),
+            }
+        try:
+            q.put_nowait(mt)
+        except asyncio.QueueFull:
+            pass
         return q
 
     def conversation_messages_for_client(self) -> list[dict[str, str]]:
         """Snapshot of Ollama messages for HTTP restore (same truncation as SSE)."""
 
         return _conversation_for_sse([dict(m) for m in self._llm_messages])
+
+    async def modes_tools_snapshot(self) -> dict[str, Any]:
+        async with self._modes_tools_lock:
+            return {"mode": self._active_mode, "tools": sorted(self._tools_on)}
+
+    async def replace_modes_tools(self, *, mode: str | None, tools: list[str]) -> None:
+        from robot_manage.voice_command_parser import MODE_LABELS, TOOL_LABELS
+
+        async with self._modes_tools_lock:
+            if mode is not None and mode not in MODE_LABELS:
+                raise ValueError(f"unknown mode: {mode!r}")
+            for t in tools:
+                if t not in TOOL_LABELS:
+                    raise ValueError(f"unknown tool: {t!r}")
+            # At most one mode is stored; replacing clears any previous mode implicitly.
+            self._active_mode = mode
+            self._tools_on = set(tools)
+            out = {"event": "modes_tools", "mode": self._active_mode, "tools": sorted(self._tools_on)}
+        await self._broadcast(out)
+
+    async def _handle_voice_command_text(self, text: str) -> bool:
+        """Apply activate/deactivate voice command; return ``True`` to skip LLM for this utterance."""
+
+        parsed = try_parse_voice_command(text)
+        if parsed is None:
+            return False
+        action, kind, label = parsed
+        async with self._modes_tools_lock:
+            if kind == "mode":
+                if action == "activate":
+                    # Exactly one mode may be active; assigning replaces any previous mode.
+                    self._active_mode = label
+                elif self._active_mode == label:
+                    self._active_mode = None
+            elif action == "activate":
+                self._tools_on.add(label)
+            else:
+                self._tools_on.discard(label)
+            out = {"event": "modes_tools", "mode": self._active_mode, "tools": sorted(self._tools_on)}
+        await self._broadcast(out)
+        if self._say.running:
+            await self._say.enqueue_sentence(format_command_speech(action, kind, label))
+        return True
 
     async def unsubscribe(self, q: asyncio.Queue[dict[str, Any]]) -> None:
         async with self._q_lock:
@@ -388,6 +445,8 @@ class MlxLiveVoicePipeline:
         if not text:
             return
         await self._broadcast({"event": "utterance_end", "text": text})
+        if await self._handle_voice_command_text(text):
+            return
         await self._llm_queue.put(text)
 
     async def _llm_worker(self) -> None:
