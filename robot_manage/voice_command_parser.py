@@ -27,7 +27,8 @@ _TOOL_ALIASES: Final[tuple[tuple[str, str], ...]] = (
     ("internet", "Internet"),
     ("actions", "Actions"),
     ("vision", "Vision"),
-    ("audio", "Audio"),
+    ("voice", "Voice"),
+    ("audio", "Voice"),
 )
 
 MODE_LABELS: Final[frozenset[str]] = frozenset({label for _, label in _MODE_ALIASES})

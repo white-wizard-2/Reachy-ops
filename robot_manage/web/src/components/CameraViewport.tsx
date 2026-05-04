@@ -1,3 +1,4 @@
+import { PrimaryBrandBlock } from "@/components/PrimaryBrandBlock";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
@@ -10,7 +11,15 @@ function statusBadgeVariant(status: CameraFeedInfo["status"]) {
   return "ghost" as const;
 }
 
-export function CameraViewport({ feed, className }: { feed: CameraFeedInfo; className?: string }) {
+export function CameraViewport({
+  feed,
+  className,
+  showBrand = false,
+}: {
+  feed: CameraFeedInfo;
+  className?: string;
+  showBrand?: boolean;
+}) {
   const showStream = feed.stream_path != null && feed.status === "live";
 
   return (
@@ -24,6 +33,12 @@ export function CameraViewport({ feed, className }: { feed: CameraFeedInfo; clas
       <div className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-primary/15 blur-2xl" />
       <div className="pointer-events-none absolute -bottom-10 -left-10 h-28 w-28 rounded-full bg-secondary/20 blur-3xl" />
       <CardHeader className="relative z-10 space-y-3 pb-2">
+        {showBrand ? (
+          <>
+            <PrimaryBrandBlock />
+            <Separator className="bg-gradient-to-r from-transparent via-primary/20 to-transparent" />
+          </>
+        ) : null}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="font-mono text-[10px] font-medium uppercase tracking-[0.35em] text-primary/80">

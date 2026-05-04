@@ -9,7 +9,7 @@ from robot_manage.voice_command_parser import try_parse_voice_command
         ("Please activate sentry mode", ("activate", "mode", "Sentry Mode")),
         ("Deactivate teacher mode", ("deactivate", "mode", "Teacher Mode")),
         ("ACTIVATE VISION now", ("activate", "tool", "Vision")),
-        ("We should deactivate audio", ("deactivate", "tool", "Audio")),
+        ("We should deactivate audio", ("deactivate", "tool", "Voice")),
     ],
 )
 def test_parse_voice_command_hits(

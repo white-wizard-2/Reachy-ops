@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
+from typing import Any, Awaitable, Callable, Optional
 
 import httpx
 import numpy as np
@@ -137,6 +137,9 @@ async def ensure_mlx_voice_pipeline(mic_state: dict[str, Any]) -> MlxLiveVoicePi
             return None
         await created.start()
         mic_state["mlx_pipeline"] = created
+        sink = mic_state.get("voice_ui_notify")
+        if sink is not None:
+            created.set_ws_voice_notify(sink)
         return created
 
 
@@ -165,6 +168,12 @@ class MlxLiveVoicePipeline:
         self._modes_tools_lock = asyncio.Lock()
         self._active_mode: str | None = None
         self._tools_on: set[str] = set()
+        self._ws_voice_notify: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None
+
+    def set_ws_voice_notify(self, fn: Optional[Callable[[dict[str, Any]], Awaitable[None]]]) -> None:
+        """Optional fan-out for UI (modes/conversation/errors); not used for per-token streaming."""
+
+        self._ws_voice_notify = fn
 
     async def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=512)
@@ -248,6 +257,12 @@ class MlxLiveVoicePipeline:
             try:
                 q.put_nowait(ev)
             except asyncio.QueueFull:
+                pass
+        fn = self._ws_voice_notify
+        if fn is not None:
+            try:
+                await fn(ev)
+            except Exception:
                 pass
 
     def _trim_history(self) -> None:

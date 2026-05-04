@@ -13,7 +13,7 @@ export const MODES = [
   "Mute Mode",
 ] as const;
 
-export const TOOLS = ["Vision", "Audio", "Thinking", "Internet", "Actions"] as const;
+export const TOOLS = ["Vision", "Voice", "Thinking", "Internet", "Actions"] as const;
 
 export function ModesToolsPanel({
   className,

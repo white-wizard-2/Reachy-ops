@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { useAppSocket } from "@/AppSocketContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { REACHY_MODES_TOOLS_EVENT } from "@/voiceModesToolsEvent";
+
+export { REACHY_MODES_TOOLS_EVENT } from "@/voiceModesToolsEvent";
 
 type LlmConfig = { model: string; ollama_host: string };
-
-type VoiceStatus = { buffering: boolean; buffered_seconds_estimate: number };
-
-type MeterPayload = { levels: number[]; peak: number };
 
 type PipeInfo = {
   mlx_whisper_import_ok: boolean;
@@ -21,7 +21,6 @@ type ChatMessage = { role: string; content: string };
 
 const VOICE_SESSION_LIVE = "reachy_ops_voice_live";
 const VOICE_SESSION_UI = "reachy_ops_voice_ui_v1";
-export const REACHY_MODES_TOOLS_EVENT = "reachy:modes-tools";
 
 type SsePayload =
   | { event: "meta"; voice?: string }
@@ -34,63 +33,10 @@ type SsePayload =
   | { event: "modes_tools"; mode: string | null; tools: string[] }
   | { event: "error"; message: string };
 
-function dispatchModesToolsFromSse(ev: SsePayload) {
-  if (ev.event !== "modes_tools") return;
-  window.dispatchEvent(
-    new CustomEvent(REACHY_MODES_TOOLS_EVENT, {
-      detail: { mode: ev.mode, tools: Array.isArray(ev.tools) ? ev.tools : [] },
-    }),
-  );
-}
-
-function parseSseBuffer(buffer: string): { events: SsePayload[]; rest: string } {
-  const events: SsePayload[] = [];
-  const parts = buffer.split("\n\n");
-  const rest = parts.pop() ?? "";
-  for (const block of parts) {
-    for (const raw of block.split("\n")) {
-      const line = raw.trim();
-      if (!line.startsWith("data:")) continue;
-      const json = line.slice(5).trim();
-      try {
-        events.push(JSON.parse(json) as SsePayload);
-      } catch {
-        /* ignore */
-      }
-    }
-  }
-  return { events, rest };
-}
-
-async function fetchLlmConfig(): Promise<LlmConfig> {
-  const res = await fetch("/api/llm/config");
-  if (!res.ok) throw new Error(`llm config ${res.status}`);
-  return res.json() as Promise<LlmConfig>;
-}
-
-async function fetchVoiceStatus(): Promise<VoiceStatus> {
-  const res = await fetch("/api/voice/status");
-  if (!res.ok) throw new Error(`voice status ${res.status}`);
-  return res.json() as Promise<VoiceStatus>;
-}
-
-async function fetchVoiceMeter(bars: number): Promise<MeterPayload> {
-  const res = await fetch(`/api/voice/meter?bars=${bars}`);
-  if (!res.ok) throw new Error(`meter ${res.status}`);
-  return res.json() as Promise<MeterPayload>;
-}
-
-async function fetchVoicePipeline(): Promise<PipeInfo> {
-  const res = await fetch("/api/voice/pipeline");
-  if (!res.ok) throw new Error(`voice pipeline ${res.status}`);
-  return res.json() as Promise<PipeInfo>;
-}
-
-async function fetchVoiceConversation(): Promise<ChatMessage[]> {
-  const res = await fetch("/api/voice/conversation");
-  if (!res.ok) return [];
-  const j = (await res.json()) as { messages?: ChatMessage[] };
-  return Array.isArray(j.messages) ? j.messages : [];
+function voiceLiveToPayload(msg: Record<string, unknown>): SsePayload | null {
+  const { type: _t, ...rest } = msg;
+  if (typeof rest.event !== "string") return null;
+  return rest as SsePayload;
 }
 
 /** Renders voice JSON envelope as spoken text; optional motion line from server-shaped JSON. */
@@ -182,23 +128,23 @@ function ConversationPanel({ messages }: { messages: ChatMessage[] }) {
 }
 
 export function VoiceCognition() {
-  const [cfg, setCfg] = useState<LlmConfig | null>(null);
-  const [cfgErr, setCfgErr] = useState<string | null>(null);
-  const [pipe, setPipe] = useState<PipeInfo | null>(null);
-  const [pipeErr, setPipeErr] = useState<string | null>(null);
-  const [ringSec, setRingSec] = useState(0);
+  const { state, send, registerVoiceLiveHandler } = useAppSocket();
+  const cfg: LlmConfig | null = state.llmConfig;
+  const pipe: PipeInfo | null = state.voicePipeline;
+  const ringSec = state.voiceStatus.buffered_seconds_estimate;
+  const levels = state.voiceMeter.levels;
+  const meterPeak = state.voiceMeter.peak;
+  const conversation = state.conversation;
+
   const [lastUtterance, setLastUtterance] = useState("");
   const [listening, setListening] = useState(false);
-  const [conversation, setConversation] = useState<ChatMessage[]>([]);
   const [llmOut, setLlmOut] = useState("");
   const [liveErr, setLiveErr] = useState<string | null>(null);
   const [liveOn, setLiveOn] = useState(false);
-  const liveAbortRef = useRef<AbortController | null>(null);
-  const [levels, setLevels] = useState<number[]>([]);
-  const [meterPeak, setMeterPeak] = useState(0);
-  const llmPreRef = useRef<HTMLPreElement>(null);
   const liveOnRef = useRef(false);
+  const voiceUnsubRef = useRef<(() => void) | null>(null);
   const voiceResumeRef = useRef(false);
+  const llmPreRef = useRef<HTMLPreElement>(null);
   const [uiHydrated, setUiHydrated] = useState(false);
 
   useEffect(() => {
@@ -209,26 +155,24 @@ export function VoiceCognition() {
     try {
       const raw = sessionStorage.getItem(VOICE_SESSION_UI);
       if (raw) {
-        const u = JSON.parse(raw) as { lastUtterance?: string; llmOut?: string; conversation?: ChatMessage[] };
+        const u = JSON.parse(raw) as { lastUtterance?: string; llmOut?: string };
         if (typeof u.lastUtterance === "string") setLastUtterance(u.lastUtterance);
         if (typeof u.llmOut === "string") setLlmOut(u.llmOut);
-        if (Array.isArray(u.conversation) && u.conversation.length > 0) setConversation(u.conversation);
       }
     } catch {
       /* private mode or corrupt */
     }
-    void (async () => {
-      const server = await fetchVoiceConversation();
-      if (server.length > 0) setConversation(server);
-      setUiHydrated(true);
-    })();
+    setUiHydrated(true);
   }, []);
 
   useEffect(() => {
     if (!uiHydrated) return;
     const id = window.setTimeout(() => {
       try {
-        sessionStorage.setItem(VOICE_SESSION_UI, JSON.stringify({ lastUtterance, llmOut, conversation }));
+        sessionStorage.setItem(
+          VOICE_SESSION_UI,
+          JSON.stringify({ lastUtterance, llmOut, conversation }),
+        );
       } catch {
         /* ignore */
       }
@@ -237,72 +181,33 @@ export function VoiceCognition() {
   }, [uiHydrated, lastUtterance, llmOut, conversation]);
 
   useEffect(() => {
-    void (async () => {
-      try {
-        setCfg(await fetchLlmConfig());
-      } catch (e) {
-        setCfgErr(e instanceof Error ? e.message : "config");
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
-    void (async () => {
-      try {
-        setPipe(await fetchVoicePipeline());
-      } catch (e) {
-        setPipeErr(e instanceof Error ? e.message : "pipeline");
-      }
-    })();
-  }, []);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void fetchVoicePipeline()
-        .then((p) => setPipe(p))
-        .catch(() => {});
-    }, 4000);
-    return () => window.clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void (async () => {
-        try {
-          const s = await fetchVoiceStatus();
-          setRingSec(s.buffered_seconds_estimate);
-        } catch {
-          setRingSec(0);
-        }
-      })();
-    }, 1500);
-    void fetchVoiceStatus().then((s) => setRingSec(s.buffered_seconds_estimate));
-    return () => window.clearInterval(id);
-  }, []);
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      void (async () => {
-        try {
-          const m = await fetchVoiceMeter(40);
-          setLevels(m.levels);
-          setMeterPeak(m.peak);
-        } catch {
-          setLevels([]);
-          setMeterPeak(0);
-        }
-      })();
-    }, 90);
-    return () => window.clearInterval(id);
-  }, []);
-
-  useEffect(() => {
     if (llmPreRef.current) llmPreRef.current.scrollTop = llmPreRef.current.scrollHeight;
   }, [llmOut]);
 
+  const applyVoiceEvent = useCallback((ev: SsePayload) => {
+    if (ev.event === "utterance_start") setListening(true);
+    if (ev.event === "utterance_end") {
+      setListening(false);
+      if ("text" in ev && typeof (ev as { text: string }).text === "string") {
+        setLastUtterance((ev as { text: string }).text);
+      }
+    }
+    if (ev.event === "llm_round_start") setLlmOut("");
+    if (ev.event === "llm_token") setLlmOut((o) => o + ev.t);
+    if (ev.event === "error") setLiveErr(ev.message);
+    if (ev.event === "modes_tools") {
+      window.dispatchEvent(
+        new CustomEvent(REACHY_MODES_TOOLS_EVENT, {
+          detail: { mode: ev.mode, tools: Array.isArray(ev.tools) ? ev.tools : [] },
+        }),
+      );
+    }
+  }, []);
+
   const stopLive = useCallback(() => {
-    liveAbortRef.current?.abort();
-    liveAbortRef.current = null;
+    voiceUnsubRef.current?.();
+    voiceUnsubRef.current = null;
+    send({ type: "voice_live_stop" });
     liveOnRef.current = false;
     setLiveOn(false);
     setListening(false);
@@ -311,84 +216,36 @@ export function VoiceCognition() {
     } catch {
       /* ignore */
     }
-  }, []);
+  }, [send]);
 
-  useEffect(() => {
-    return () => {
-      liveAbortRef.current?.abort();
-    };
-  }, []);
-
-  const startLive = useCallback(async () => {
+  const startLive = useCallback(() => {
     if (liveOnRef.current) return;
     liveOnRef.current = true;
     setLiveErr(null);
     setListening(false);
     setLiveOn(true);
-    const ac = new AbortController();
-    liveAbortRef.current = ac;
     try {
-      const sync = await fetchVoiceConversation();
-      if (sync.length > 0) setConversation(sync);
-      const res = await fetch("/api/voice/live", { signal: ac.signal });
-      if (!res.ok || !res.body) {
-        const detail = (await res.text()).trim();
-        throw new Error(detail || `live ${res.status}`);
-      }
-      try {
-        sessionStorage.setItem(VOICE_SESSION_LIVE, "1");
-      } catch {
-        /* ignore */
-      }
-      const reader = res.body.getReader();
-      const dec = new TextDecoder();
-      let carry = "";
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        carry += dec.decode(value, { stream: true });
-        const { events, rest } = parseSseBuffer(carry);
-        carry = rest;
-        for (const ev of events) {
-          if (ev.event === "utterance_start") setListening(true);
-          if (ev.event === "utterance_end") {
-            setListening(false);
-            setLastUtterance(ev.text);
-          }
-          if (ev.event === "conversation") setConversation(ev.messages);
-          if (ev.event === "llm_round_start") setLlmOut("");
-          if (ev.event === "llm_token") setLlmOut((o) => o + ev.t);
-          if (ev.event === "error") setLiveErr(ev.message);
-          dispatchModesToolsFromSse(ev);
-        }
-      }
-      const tail = parseSseBuffer(carry + "\n\n");
-      for (const ev of tail.events) {
-        if (ev.event === "utterance_start") setListening(true);
-        if (ev.event === "utterance_end") {
-          setListening(false);
-          setLastUtterance(ev.text);
-        }
-        if (ev.event === "conversation") setConversation(ev.messages);
-        if (ev.event === "llm_round_start") setLlmOut("");
-        if (ev.event === "llm_token") setLlmOut((o) => o + ev.t);
-        if (ev.event === "error") setLiveErr(ev.message);
-        dispatchModesToolsFromSse(ev);
-      }
-    } catch (e) {
-      if ((e as Error).name !== "AbortError") {
-        setLiveErr(e instanceof Error ? e.message : "live failed");
-      }
-    } finally {
-      liveOnRef.current = false;
-      setLiveOn(false);
-      setListening(false);
-      liveAbortRef.current = null;
-      void fetchVoicePipeline()
-        .then((p) => setPipe(p))
-        .catch(() => {});
+      sessionStorage.setItem(VOICE_SESSION_LIVE, "1");
+    } catch {
+      /* ignore */
     }
-  }, []);
+
+    voiceUnsubRef.current?.();
+    voiceUnsubRef.current = registerVoiceLiveHandler((msg) => {
+      const ev = voiceLiveToPayload(msg);
+      if (!ev) return;
+      applyVoiceEvent(ev);
+    });
+    send({ type: "voice_live_start" });
+  }, [applyVoiceEvent, registerVoiceLiveHandler, send]);
+
+  useEffect(() => {
+    return () => {
+      voiceUnsubRef.current?.();
+      voiceUnsubRef.current = null;
+      send({ type: "voice_live_stop" });
+    };
+  }, [send]);
 
   useEffect(() => {
     if (voiceResumeRef.current || !pipe?.mlx_live_ready) return;
@@ -400,11 +257,14 @@ export function VoiceCognition() {
     }
     if (!want || liveOnRef.current) return;
     voiceResumeRef.current = true;
-    void startLive();
+    startLive();
   }, [pipe?.mlx_live_ready, startLive]);
 
+  const cfgWaiting = !state.connected || (cfg === null && state.socketError === null);
+  const socketHint = state.socketError;
+
   return (
-    <section className="mt-14 space-y-6 md:mt-20">
+    <section className="mt-2 space-y-4 md:mt-3">
       <div className="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
         <div>
           <p className="font-mono text-[10px] font-medium uppercase tracking-[0.45em] text-secondary/90">
@@ -412,11 +272,10 @@ export function VoiceCognition() {
           </p>
           <h2 className="font-display text-2xl font-bold tracking-wide text-glow md:text-3xl">VOICE · COGNITION</h2>
           <p className="mt-1 font-sans text-sm text-muted-foreground md:max-w-[min(100%,52rem)]">
-            MLX Whisper segments speech by <strong className="text-foreground/90">silence</strong> (see{" "}
-            <code className="font-mono text-[10px]">MLX_VOICE_*</code> env in run script), then sends each utterance to
-            Ollama <code className="font-mono text-[10px]">/api/chat</code> with <strong className="text-foreground/90">full conversation context</strong>.
-            Default model repo:{" "}
-            <code className="font-mono text-[10px]">mlx-community/whisper-large-v3-mlx</code>.
+            Telemetry and live tokens use the shared <code className="font-mono text-[10px]">/ws/app</code> channel
+            (no REST polling). MLX Whisper segments speech by <strong className="text-foreground/90">silence</strong>{" "}
+            (see <code className="font-mono text-[10px]">MLX_VOICE_*</code> env in run script), then Ollama{" "}
+            <code className="font-mono text-[10px]">/api/chat</code> with full conversation context.
           </p>
         </div>
         <div className="flex flex-col items-start gap-2 md:items-end">
@@ -429,13 +288,13 @@ export function VoiceCognition() {
                 {cfg.model}
               </Badge>
             </div>
-          ) : cfgErr ? (
-            <Badge variant="offline" className="font-mono text-[10px]">
-              {cfgErr}
-            </Badge>
-          ) : (
+          ) : cfgWaiting ? (
             <Badge variant="ghost" className="font-mono text-[10px]">
               CONFIG…
+            </Badge>
+          ) : (
+            <Badge variant="offline" className="max-w-[240px] truncate font-mono text-[10px]">
+              {socketHint ?? "config"}
             </Badge>
           )}
           <Badge variant="outline" className="font-mono text-[10px] tracking-wide">
@@ -444,10 +303,6 @@ export function VoiceCognition() {
           {pipe ? (
             <Badge variant={pipe.mlx_live_ready ? "default" : "secondary"} className="font-mono text-[10px]">
               mlx {pipe.mlx_live_ready ? "live" : "idle"}
-            </Badge>
-          ) : pipeErr ? (
-            <Badge variant="offline" className="font-mono text-[10px]">
-              {pipeErr}
             </Badge>
           ) : (
             <Badge variant="ghost" className="font-mono text-[10px]">
@@ -467,7 +322,7 @@ export function VoiceCognition() {
             {pipe?.mlx_whisper_import_ok === false
               ? "This server cannot import mlx_whisper — install Apple Silicon deps (requirements-robot-manage-mlx.txt)."
               : pipe?.mlx_live_ready
-                ? "Speak in phrases; the server waits for silence before transcribing and updating the LLM context. Refresh restores Ollama context from the server when the session is still up; live reconnects if it was left on."
+                ? "Speak in phrases; the server waits for silence before transcribing and updating the LLM context. Live stream uses WebSocket voice_live messages."
                 : "Click Start live — the MLX pipeline starts on first connect when the robot mic ring is active."}
           </CardDescription>
           <Separator className="mt-3 bg-gradient-to-r from-transparent via-primary/30 to-transparent" />

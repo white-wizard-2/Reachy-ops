@@ -17,16 +17,18 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from reachy_mini import ReachyMini
 
+from robot_manage.app_ui_hub import AppUiHub
 from robot_manage.camera_feed import MiniCameraPublisher
 from robot_manage.camera_layout import build_camera_layout
 from robot_manage.mic_buffer import MicCollectorThread, RobotMicRingBuffer
 from robot_manage.mlx_voice_pipeline import ensure_mlx_voice_pipeline, try_create_mlx_pipeline
+from robot_manage.robot_state_hub import RobotStateHub, robot_state_poll_loop
 from robot_manage.settings import ollama_base_url, ollama_model
 
 _MJPEG_BOUNDARY = b"frame"
@@ -50,6 +52,119 @@ def create_app(
     mini_ref: list[Optional[ReachyMini]] = [None]
     pub_ref: list[Optional[MiniCameraPublisher]] = [None]
     mic_state: dict[str, Any] = {"buffer": None, "collector": None, "mlx_pipeline": None, "mini": None}
+    ui_hub = AppUiHub()
+    mic_state["voice_ui_notify"] = ui_hub.voice_notify
+
+    def _daemon_state_full_url() -> Optional[str]:
+        m = mini_ref[0]
+        if m is None:
+            return None
+        return f"http://{m.client.host}:{m.client.port}/api/state/full"
+
+    state_hub = RobotStateHub(_daemon_state_full_url, ui_hub.broadcast_json)
+    state_poll_task: list[Optional[asyncio.Task[None]]] = [None]
+    ui_metrics_task: list[Optional[asyncio.Task[None]]] = [None]
+    voice_live_forward_tasks: dict[int, asyncio.Task[None]] = {}
+
+    async def build_ui_snapshot() -> dict[str, Any]:
+        mini = mini_ref[0]
+        if mini is None:
+            layout: dict[str, Any] = {"feeds": [], "sdk_single_stream": True, "error": "robot_not_ready"}
+        else:
+            layout = build_camera_layout(mini)
+        u = urlparse(ollama_base_url())
+        ollama_host = u.netloc or u.path or u.geturl()
+        llm_config = {"model": ollama_model(), "ollama_host": ollama_host}
+        buf = mic_state.get("buffer")
+        pipe = mic_state.get("mlx_pipeline")
+        if buf is not None:
+            pipe = await ensure_mlx_voice_pipeline(mic_state)
+        if buf is None:
+            voice_status = {"buffering": False, "buffered_seconds_estimate": 0.0}
+            voice_meter: dict[str, Any] = {"levels": [0.0] * 40, "peak": 0.0}
+        else:
+            levels, peak = buf.meter_histogram(bars=40)
+            voice_meter = {"levels": levels, "peak": round(float(peak), 4)}
+            voice_status = {
+                "buffering": True,
+                "buffered_seconds_estimate": round(buf.approx_buffered_seconds(), 2),
+            }
+        try:
+            import mlx_whisper  # noqa: F401
+
+            mlx_ok = True
+        except ImportError:
+            mlx_ok = False
+        voice_pipeline = {
+            "mlx_whisper_import_ok": mlx_ok,
+            "mlx_live_ready": pipe is not None,
+        }
+        if pipe is None:
+            modes_tools = {"mode": None, "tools": []}
+            conversation: list[Any] = []
+        else:
+            modes_tools = await pipe.modes_tools_snapshot()
+            conversation = pipe.conversation_messages_for_client()
+        robot_state = state_hub.public_message()
+        return {
+            "layout": layout,
+            "llm_config": llm_config,
+            "voice_pipeline": voice_pipeline,
+            "voice_status": voice_status,
+            "voice_meter": voice_meter,
+            "modes_tools": modes_tools,
+            "conversation": conversation,
+            "robot_state": robot_state,
+        }
+
+    async def ui_metrics_broadcast_loop() -> None:
+        tick = 0
+        while True:
+            await asyncio.sleep(0.1)
+            if ui_hub.n_connections() == 0:
+                continue
+            tick += 1
+            buf = mic_state.get("buffer")
+            if buf is None:
+                await ui_hub.broadcast_json({"type": "voice_meter", "levels": [0.0] * 40, "peak": 0.0})
+            else:
+                levels, peak = buf.meter_histogram(bars=40)
+                await ui_hub.broadcast_json(
+                    {"type": "voice_meter", "levels": levels, "peak": round(float(peak), 4)}
+                )
+            if tick % 10 == 0:
+                if buf is None:
+                    st = {"buffering": False, "buffered_seconds_estimate": 0.0}
+                else:
+                    st = {
+                        "buffering": True,
+                        "buffered_seconds_estimate": round(buf.approx_buffered_seconds(), 2),
+                    }
+                await ui_hub.broadcast_json({"type": "voice_status", **st})
+            if tick % 40 == 0:
+                try:
+                    import mlx_whisper  # noqa: F401
+
+                    mlx_ok = True
+                except ImportError:
+                    mlx_ok = False
+                await ui_hub.broadcast_json(
+                    {
+                        "type": "voice_pipeline",
+                        "mlx_whisper_import_ok": mlx_ok,
+                        "mlx_live_ready": mic_state.get("mlx_pipeline") is not None,
+                    }
+                )
+
+    async def stop_voice_live_forward(ws_key: int) -> None:
+        t = voice_live_forward_tasks.pop(ws_key, None)
+        if t is None or t.done():
+            return
+        t.cancel()
+        try:
+            await t
+        except asyncio.CancelledError:
+            pass
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -74,10 +189,37 @@ def create_app(
             mlx_pipe = try_create_mlx_pipeline(mic_buf, mini)
             if mlx_pipe is not None:
                 mic_state["mlx_pipeline"] = mlx_pipe
+                mlx_pipe.set_ws_voice_notify(ui_hub.voice_notify)
                 await mlx_pipe.start()
+        state_poll_task[0] = asyncio.create_task(robot_state_poll_loop(state_hub))
+        ui_metrics_task[0] = asyncio.create_task(ui_metrics_broadcast_loop())
         try:
             yield
         finally:
+            mt = ui_metrics_task[0]
+            if mt is not None:
+                mt.cancel()
+                try:
+                    await mt
+                except asyncio.CancelledError:
+                    pass
+                ui_metrics_task[0] = None
+            for _wid, vt in list(voice_live_forward_tasks.items()):
+                if not vt.done():
+                    vt.cancel()
+                    try:
+                        await vt
+                    except asyncio.CancelledError:
+                        pass
+            voice_live_forward_tasks.clear()
+            t = state_poll_task[0]
+            if t is not None:
+                t.cancel()
+                try:
+                    await t
+                except asyncio.CancelledError:
+                    pass
+                state_poll_task[0] = None
             mlx_pipe = mic_state.get("mlx_pipeline")
             if mlx_pipe is not None:
                 await mlx_pipe.aclose()
@@ -232,6 +374,100 @@ def create_app(
             stream(),
             media_type=f"multipart/x-mixed-replace; boundary={_MJPEG_BOUNDARY.decode()}",
         )
+
+    @app.websocket("/ws/app")
+    async def ws_app(websocket: WebSocket) -> None:
+        """Single UI channel: snapshot, telemetry ticks, voice live stream, layout/modes commands."""
+        await websocket.accept()
+        await ui_hub.register(websocket)
+        snap = await build_ui_snapshot()
+        await websocket.send_json({"type": "snapshot", **snap})
+        ws_key = id(websocket)
+        try:
+            while True:
+                try:
+                    raw = await websocket.receive_text()
+                except WebSocketDisconnect:
+                    break
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(msg, dict):
+                    continue
+                mtype = msg.get("type")
+                if mtype == "refresh_layout":
+                    mini = mini_ref[0]
+                    if mini is None:
+                        lay: dict[str, Any] = {
+                            "feeds": [],
+                            "sdk_single_stream": True,
+                            "error": "robot_not_ready",
+                        }
+                    else:
+                        lay = build_camera_layout(mini)
+                    await ui_hub.broadcast_json({"type": "layout", "payload": lay})
+                elif mtype == "modes_tools_set":
+                    pipe = await ensure_mlx_voice_pipeline(mic_state)
+                    if pipe is None:
+                        await websocket.send_json(
+                            {
+                                "type": "voice_live",
+                                "event": "error",
+                                "message": "MLX voice pipeline is not available.",
+                            }
+                        )
+                        continue
+                    tools_raw = msg.get("tools")
+                    tools_list = tools_raw if isinstance(tools_raw, list) else []
+                    tools_str = [str(x) for x in tools_list]
+                    rm = msg.get("mode")
+                    mode_val: Optional[str] = None if rm is None else str(rm)
+                    try:
+                        await pipe.replace_modes_tools(mode=mode_val, tools=tools_str)
+                    except ValueError as e:
+                        await websocket.send_json(
+                            {"type": "modes_tools_error", "detail": str(e)}
+                        )
+                elif mtype == "voice_live_start":
+                    await stop_voice_live_forward(ws_key)
+                    pipe = await ensure_mlx_voice_pipeline(mic_state)
+                    if pipe is None:
+                        buf = mic_state.get("buffer")
+                        if buf is None:
+                            detail = "No robot microphone ring (Reachy media has no audio for this session)."
+                        else:
+                            detail = (
+                                "MLX Whisper is not available (install mlx-whisper on Apple Silicon: "
+                                "pip install -r requirements-robot-manage-mlx.txt)."
+                            )
+                        await websocket.send_json(
+                            {"type": "voice_live", "event": "error", "message": detail}
+                        )
+                        continue
+
+                    q = await pipe.subscribe()
+                    pipe_ref = pipe
+
+                    async def _forward() -> None:
+                        try:
+                            await websocket.send_json(
+                                {"type": "voice_live", "event": "meta", "voice": "mlx_live"}
+                            )
+                            while True:
+                                item = await q.get()
+                                await websocket.send_json({"type": "voice_live", **item})
+                        except asyncio.CancelledError:
+                            raise
+                        finally:
+                            await pipe_ref.unsubscribe(q)
+
+                    voice_live_forward_tasks[ws_key] = asyncio.create_task(_forward())
+                elif mtype == "voice_live_stop":
+                    await stop_voice_live_forward(ws_key)
+        finally:
+            await stop_voice_live_forward(ws_key)
+            await ui_hub.unregister(websocket)
 
     if (static_path / "index.html").is_file():
         app.mount("/", StaticFiles(directory=str(static_path), html=True), name="static")
