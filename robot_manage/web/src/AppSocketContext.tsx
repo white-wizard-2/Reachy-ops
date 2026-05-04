@@ -130,7 +130,13 @@ const initial: AppSocketState = {
   modesTools: { mode: null, tools: [] },
   conversation: [],
   deviceControls: { ...defaultDeviceControls },
-  yoloVision: { import_ok: false, weights_path: null, worker_running: false },
+  yoloVision: {
+    import_ok: false,
+    weights_path: null,
+    worker_running: false,
+    worker_phase: null,
+    worker_detail: null,
+  },
   yoloDetections: null,
 };
 
@@ -164,13 +170,23 @@ function normalizeVoicePipeline(raw: unknown): PipeInfo {
 
 function normalizeYoloVision(raw: unknown): YoloVisionState {
   if (!raw || typeof raw !== "object") {
-    return { import_ok: false, weights_path: null, worker_running: false };
+    return {
+      import_ok: false,
+      weights_path: null,
+      worker_running: false,
+      worker_phase: null,
+      worker_detail: null,
+    };
   }
   const o = raw as Record<string, unknown>;
+  const wp = o.worker_phase;
+  const wd = o.worker_detail;
   return {
     import_ok: typeof o.import_ok === "boolean" ? o.import_ok : false,
     weights_path: typeof o.weights_path === "string" ? o.weights_path : null,
     worker_running: typeof o.worker_running === "boolean" ? o.worker_running : false,
+    worker_phase: typeof wp === "string" ? wp : null,
+    worker_detail: typeof wd === "string" ? wd : null,
   };
 }
 
@@ -311,20 +327,23 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
           const fh = msg.frame_hw;
           const tracks = msg.tracks;
           const tms = msg.t_ms;
+          const fh0 = Array.isArray(fh) && fh.length >= 2 ? Number(fh[0]) : NaN;
+          const fh1 = Array.isArray(fh) && fh.length >= 2 ? Number(fh[1]) : NaN;
+          const tmsN = Number(tms);
           if (
             Array.isArray(fh) &&
             fh.length === 2 &&
-            typeof fh[0] === "number" &&
-            typeof fh[1] === "number" &&
+            Number.isFinite(fh0) &&
+            Number.isFinite(fh1) &&
             Array.isArray(tracks) &&
-            typeof tms === "number"
+            Number.isFinite(tmsN)
           ) {
             dispatch({
               kind: "yolo_detections",
               v: {
-                frame_hw: [fh[0], fh[1]],
+                frame_hw: [fh0, fh1],
                 tracks: tracks as YoloDetectionsPayload["tracks"],
-                t_ms: tms,
+                t_ms: tmsN,
               },
             });
           }

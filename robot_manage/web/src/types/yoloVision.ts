@@ -2,6 +2,9 @@ export type YoloVisionState = {
   import_ok: boolean;
   weights_path: string | null;
   worker_running: boolean;
+  /** Last known worker phase from server (e.g. ``running``, ``import_failed``). */
+  worker_phase: string | null;
+  worker_detail: string | null;
 };
 
 export type YoloTrackRow = {

@@ -162,7 +162,7 @@ export function CameraViewport({
                 {yoloActive
                   ? `${drawPayload?.tracks.length ?? 0} track(s) · frame ${drawPayload?.frame_hw[1] ?? "—"}×${drawPayload?.frame_hw[0] ?? "—"}`
                   : yoloReady
-                    ? "Weights configured — worker not running (check server logs)."
+                    ? `Weights configured — worker not running${yoloVision.worker_detail ? `: ${yoloVision.worker_detail}` : " (check server logs)"}.`
                     : yoloVision.import_ok
                       ? "Set ROBOT_MANAGE_YOLO_NPZ to a converted .npz on the Mac host."
                       : "Install yolo-mlx on the Apple Silicon host (see requirements-robot-manage-yolo.txt)."}
@@ -204,7 +204,7 @@ export function CameraViewport({
         >
           {showStream ? (
             <>
-              <div className="viewport-scanlines absolute inset-0 z-10 rounded-lg" />
+              <div className="viewport-scanlines absolute inset-0 z-[4] rounded-lg" />
               <img
                 src={feed.stream_path!}
                 alt={feed.label}
@@ -213,7 +213,7 @@ export function CameraViewport({
               />
               <canvas
                 ref={cvRef}
-                className="pointer-events-none absolute inset-0 z-[5] h-full w-full"
+                className="pointer-events-none absolute inset-0 z-[12] h-full w-full"
                 aria-hidden
               />
               <div className="pointer-events-none absolute inset-0 rounded-lg ring-1 ring-inset ring-primary/20" />

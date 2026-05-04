@@ -12,6 +12,7 @@ from typing import Any
 
 import numpy as np
 
+from robot_manage.coco80_names import coco80_display_label
 from robot_manage.yolo_detection_wire import track_row, yolo_detections_message
 
 _LOG = logging.getLogger(__name__)
@@ -60,6 +61,9 @@ class YoloMlxVisionWorker:
             self._thread.join(timeout=8.0)
             self._thread = None
         self._model = None
+        prev = self._mic_state.get("yolo_worker_diag")
+        if isinstance(prev, dict) and prev.get("phase") == "running":
+            self._set_diag("stopped")
 
     def _emit(self, payload: dict[str, Any]) -> None:
         def _done(fut: asyncio.Future[Any]) -> None:
@@ -71,19 +75,27 @@ class YoloMlxVisionWorker:
         fut = asyncio.run_coroutine_threadsafe(self._broadcast_json(payload), self._loop)
         fut.add_done_callback(_done)
 
+    def _set_diag(self, phase: str, detail: str | None = None) -> None:
+        self._mic_state["yolo_worker_diag"] = {"phase": phase, "detail": detail}
+
     def _run(self) -> None:
+        self._set_diag("import")
         try:
             from yolo26mlx import YOLO  # noqa: PLC0415
         except Exception as e:  # noqa: BLE001
+            self._set_diag("import_failed", str(e))
             _LOG.warning("yolo-mlx import failed (%s); vision worker exits", e)
             return
 
+        self._set_diag("load_model")
         try:
             self._model = YOLO(self._weights_path, verbose=False)
         except Exception as e:  # noqa: BLE001
+            self._set_diag("load_failed", str(e))
             _LOG.warning("YOLO load failed (%s): %s", self._weights_path, e)
             return
 
+        self._set_diag("running")
         model = self._model
         period_s = 1.0 / 12.0
         min_move_px = 10.0
@@ -129,7 +141,8 @@ class YoloMlxVisionWorker:
                 ids = boxes.id
                 for i in range(len(boxes)):
                     cidx = int(cls_arr[i])
-                    lab = str(names.get(cidx, f"class{cidx}"))
+                    raw = str(names.get(cidx, f"class{cidx}"))
+                    lab = coco80_display_label(cidx, raw)
                     tid_i: int | None = int(ids[i]) if ids is not None else None
                     x1, y1, x2, y2 = float(xy[i, 0]), float(xy[i, 1]), float(xy[i, 2]), float(xy[i, 3])
                     rows.append(

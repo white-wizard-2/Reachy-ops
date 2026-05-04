@@ -13,8 +13,7 @@ export OLLAMA_VOICE_SAY_TARGET="${OLLAMA_VOICE_SAY_TARGET:-reachy}"
 # Optional: OLLAMA_VOICE_JSON_MOVES=1 — legacy JSON speech+move; default plain text TTS (see pollen-robotics/reachy_mini_conversation_app for tool-queued motion).
 export ROBOT_MANAGE_REACTION_MOVES="${ROBOT_MANAGE_REACTION_MOVES:-1}"
 # Optional: Apple Silicon host only — converted YOLO26 weights for yolo-mlx ByteTrack + UI overlay:
-# export ROBOT_MANAGE_YOLO_NPZ="$HOME/models/yolo26n.npz"
-
+export ROBOT_MANAGE_YOLO_NPZ="$HOME/models/yolo26n.npz"
 if [[ ! -d .venv ]]; then
   python3 -m venv .venv
 fi

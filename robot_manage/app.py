@@ -92,6 +92,7 @@ def create_app(
         "_black_jpeg": None,
         "yolo_follow_enabled": True,
         "yolo_worker": None,
+        "yolo_worker_diag": None,
     }
     ui_hub = AppUiHub()
     mic_state["voice_ui_notify"] = ui_hub.voice_notify
@@ -251,6 +252,18 @@ def create_app(
         yw = mic_state.get("yolo_worker")
         yolo_wp = yolo_mlx_weights_path()
         worker_alive = bool(getattr(yw, "is_alive", lambda: False)())
+        diag_any = mic_state.get("yolo_worker_diag")
+        worker_phase: str | None = None
+        worker_detail: str | None = None
+        if isinstance(diag_any, dict):
+            ph = diag_any.get("phase")
+            if isinstance(ph, str):
+                worker_phase = ph
+            det = diag_any.get("detail")
+            if isinstance(det, str):
+                worker_detail = det
+            elif det is not None:
+                worker_detail = str(det)
         return {
             "layout": layout,
             "llm_config": llm_config,
@@ -264,6 +277,8 @@ def create_app(
                 "import_ok": yolo_mlx_import_ok(),
                 "weights_path": yolo_wp,
                 "worker_running": worker_alive,
+                "worker_phase": worker_phase,
+                "worker_detail": worker_detail,
             },
             "device_controls": {
                 "mic_enabled": not md.is_set(),
@@ -342,6 +357,7 @@ def create_app(
         if yolo_wp and yolo_mlx_import_ok():
             from robot_manage.yolo_mlx_worker import YoloMlxVisionWorker
 
+            mic_state["yolo_worker_diag"] = {"phase": "starting", "detail": None}
             yw = YoloMlxVisionWorker(
                 loop=loop,
                 broadcast_json=ui_hub.broadcast_json,
