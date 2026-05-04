@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import logging
 import shutil
 import subprocess
+from collections.abc import Callable
 from typing import Final, Protocol
+from uuid import uuid4
 
-from robot_manage.settings import ollama_voice_say_enabled, ollama_voice_say_voice
+import httpx
+
+from robot_manage.settings import ollama_voice_say_enabled, ollama_voice_say_target, ollama_voice_say_voice
 
 log = logging.getLogger(__name__)
 
@@ -99,19 +104,34 @@ class LlmSayRunner:
     consecutive sentences).
     """
 
-    def __init__(self, mic_hooks: TtsMicHooks | None = None) -> None:
+    def __init__(
+        self,
+        mic_hooks: TtsMicHooks | None = None,
+        *,
+        reachy_host: str | None = None,
+        reachy_port: int = 8000,
+        is_output_muted: Callable[[], bool] | None = None,
+    ) -> None:
         self._binary = say_binary_path()
         self._voice = ollama_voice_say_voice()
         self._hooks: TtsMicHooks = mic_hooks or _NullMicHooks()
         self._queue: asyncio.Queue[str | None] = asyncio.Queue()
         self._worker: asyncio.Task[None] | None = None
+        self._reachy_host = reachy_host
+        self._reachy_port = reachy_port
+        self._is_output_muted = is_output_muted
 
     def start(self) -> None:
         if not ollama_voice_say_enabled():
             return
-        if not self._binary:
-            log.warning("OLLAMA_VOICE_SAY is set but `say` was not found on PATH")
-            return
+        if ollama_voice_say_target() == "macos":
+            if not self._binary:
+                log.warning("OLLAMA_VOICE_SAY is set but `say` was not found on PATH")
+                return
+        else:
+            if not self._reachy_host:
+                log.warning("OLLAMA_VOICE_SAY is set for reachy but no robot host was provided")
+                return
         if self._worker is None:
             self._worker = asyncio.create_task(self._run(), name="mlx_llm_say")
 
@@ -134,7 +154,6 @@ class LlmSayRunner:
         self._worker = None
 
     async def _run(self) -> None:
-        assert self._binary is not None
         while True:
             item = await self._queue.get()
             if item is None:
@@ -144,7 +163,13 @@ class LlmSayRunner:
             cur: str = item
             try:
                 while True:
-                    await asyncio.to_thread(say, cur, voice=self._voice)
+                    muted = self._is_output_muted is not None and self._is_output_muted()
+                    if not muted:
+                        if ollama_voice_say_target() == "macos":
+                            assert self._binary is not None
+                            await asyncio.to_thread(say, cur, voice=self._voice)
+                        else:
+                            await self._say_on_reachy(cur)
                     try:
                         nxt = self._queue.get_nowait()
                     except asyncio.QueueEmpty:
@@ -157,3 +182,32 @@ class LlmSayRunner:
                 await self._hooks.on_tts_end()
             if stop_worker:
                 break
+
+    async def _say_on_reachy(self, text: str) -> None:
+        host = self._reachy_host
+        if not host:
+            return
+        try:
+            from gtts import gTTS  # type: ignore[import-not-found]
+        except Exception as e:  # pragma: no cover
+            raise RuntimeError("gTTS is required for OLLAMA_VOICE_SAY_TARGET=reachy") from e
+
+        # gTTS returns MP3; the Reachy daemon plays uploaded files via /api/media/play_sound.
+        tts = gTTS(text=text)
+        buf = io.BytesIO()
+        tts.write_to_fp(buf)  # type: ignore[attr-defined]
+        data = buf.getvalue()
+
+        async with httpx.AsyncClient(base_url=f"http://{host}:{self._reachy_port}", timeout=60.0) as client:
+            upload_name = f"llm_{uuid4().hex}.mp3"
+            up = await client.post(
+                "/api/media/sounds/upload",
+                files={"file": (upload_name, data, "audio/mpeg")},
+            )
+            up.raise_for_status()
+            path = (up.json() or {}).get("path") or ""
+            filename = path.split("/")[-1] if isinstance(path, str) else ""
+            if not filename:
+                raise RuntimeError("Reachy daemon upload did not return a sound path")
+            play = await client.post("/api/media/play_sound", json={"file": filename})
+            play.raise_for_status()

@@ -251,6 +251,43 @@ def parse_voice_assistant_json(full_text: str) -> tuple[tuple[str, str] | None, 
     return pair, speech, assistant_content
 
 
+def parse_voice_assistant_output(full_text: str) -> tuple[tuple[str, str] | None, str, str]:
+    """Parse assistant output for the MLX voice pipeline.
+
+    Default (``OLLAMA_VOICE_JSON_MOVES`` off): plain text — the whole reply is spoken and stored in history.
+    If the model still returns a JSON object with a ``speech`` field, only ``speech`` is used; moves are ignored
+    so playback is not tied to ``play_move`` during TTS.
+
+    Legacy (``OLLAMA_VOICE_JSON_MOVES=1``): same as :func:`parse_voice_assistant_json`.
+    """
+
+    from robot_manage.settings import ollama_voice_json_moves_enabled
+
+    if ollama_voice_json_moves_enabled():
+        return parse_voice_assistant_json(full_text)
+
+    t = _unwrap_json_fenced(full_text).strip()
+    if not t:
+        raise VoiceAssistantJsonError("empty assistant response")
+    if t.startswith("{") and t.endswith("}"):
+        try:
+            obj = json.loads(t)
+        except json.JSONDecodeError as e:
+            raise VoiceAssistantJsonError(f"invalid JSON in plain-text mode: {e}") from e
+        if isinstance(obj, dict):
+            sp = obj.get("speech")
+            if isinstance(sp, str):
+                speech = sp.strip()
+                if not speech:
+                    raise VoiceAssistantJsonError("speech must be a non-empty string")
+                return None, speech, speech
+        raise VoiceAssistantJsonError(
+            "Plain-text mode is on, but the reply looks like JSON without a usable speech string. "
+            "Reply in natural language only, or set OLLAMA_VOICE_JSON_MOVES=1 for JSON+move mode."
+        )
+    return None, t, t
+
+
 def _move_instruction_few_shots() -> str:
     """Compact valid JSON lines so the model sees non-null moves as the default."""
 

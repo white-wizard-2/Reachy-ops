@@ -31,6 +31,14 @@ def test_approx_buffered_seconds() -> None:
     assert abs(buf.approx_buffered_seconds() - 1.0) < 1e-6
 
 
+def test_ring_clear() -> None:
+    buf = RobotMicRingBuffer(max_wall_seconds=10.0)
+    buf.push(np.zeros((80, 2), dtype=np.float32))
+    assert buf.approx_buffered_seconds() > 0
+    buf.clear()
+    assert buf.approx_buffered_seconds() == 0.0
+
+
 def test_meter_histogram_peak() -> None:
     buf = RobotMicRingBuffer()
     t = np.linspace(0, 8 * np.pi, 12000, dtype=np.float32)

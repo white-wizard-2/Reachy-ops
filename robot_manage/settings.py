@@ -104,24 +104,39 @@ def mlx_voice_speech_rms() -> float:
     return float(os.environ.get("MLX_VOICE_SPEECH_RMS", "0.012"))
 
 
+def ollama_voice_json_moves_enabled() -> bool:
+    """``OLLAMA_VOICE_JSON_MOVES=1`` — assistant replies are JSON ``{speech, move}`` (legacy; can fight TTS timing)."""
+
+    return os.environ.get("OLLAMA_VOICE_JSON_MOVES", "").strip().lower() in ("1", "true", "yes")
+
+
+def robot_manage_reaction_moves_enabled() -> bool:
+    """``ROBOT_MANAGE_REACTION_MOVES=1`` — play a short reaction move during TTS (default on)."""
+
+    raw = os.environ.get("ROBOT_MANAGE_REACTION_MOVES", "1").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
 def ollama_voice_text_system_prompt() -> str:
     from robot_manage.move_catalog import move_instruction_appendix
 
-    return os.environ.get(
-        "OLLAMA_VOICE_TEXT_SYSTEM",
+    default = (
         "You are Disco, the onboard assistant for this Reachy Mini—the human is talking to you on the robot. "
-        "You are embodied: almost every reply should use a non-null move from the motion catalog in your JSON; "
-        "use move:null only for dry data readouts or when the user explicitly asked for no motion. "
+        "Reply with plain natural language only: one assistant message, no JSON, no markdown fences, no commentary. "
+        "That text is what gets read aloud on the robot speaker. "
         "Embody one personality: friendly, direct, a little fun, never stiff or call-center scripted. "
         "Use first person as Disco when it fits; keep answers short and useful. "
         "User turns are transcribed from the robot microphone (MLX Whisper); keep continuity across turns. "
         "Match the language of the user's latest message; do not volunteer language switches, "
         "do not default to English with phrases like switching back to English, and avoid stock closers "
         "such as how can I assist you further with your Reachy Mini robot. "
-        "Do not use emojis or emoticons; plain text only. "
-        "Do not invent camera feeds, coordinates, sectors, or surveillance-style fiction unless they ask.\n"
-        + move_instruction_appendix(),
+        "Do not use emojis or emoticons. "
+        "Do not invent camera feeds, coordinates, sectors, or surveillance-style fiction unless they ask."
     )
+    base = os.environ.get("OLLAMA_VOICE_TEXT_SYSTEM", default)
+    if ollama_voice_json_moves_enabled():
+        return base + "\n\n" + move_instruction_appendix()
+    return base
 
 
 def ollama_voice_max_history_messages() -> int:
@@ -134,6 +149,19 @@ def ollama_voice_say_enabled() -> bool:
     """``OLLAMA_VOICE_SAY=1`` — speak each completed LLM sentence with macOS ``say`` (host running robot_manage)."""
 
     return os.environ.get("OLLAMA_VOICE_SAY", "").strip().lower() in ("1", "true", "yes")
+
+
+def ollama_voice_say_target() -> str:
+    """Where to play TTS audio.
+
+    - ``macos``: use local ``say`` on the host running robot_manage
+    - ``reachy``: synthesize TTS and play it on the Reachy Mini speaker via the daemon API
+
+    Env: ``OLLAMA_VOICE_SAY_TARGET`` (default ``macos``).
+    """
+
+    v = os.environ.get("OLLAMA_VOICE_SAY_TARGET", "macos").strip().lower()
+    return v if v in ("macos", "reachy") else "macos"
 
 
 def ollama_voice_say_voice() -> str | None:

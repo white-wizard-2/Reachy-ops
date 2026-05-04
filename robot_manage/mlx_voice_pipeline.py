@@ -9,9 +9,10 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 import numpy as np
 
-from robot_manage.llm_say import LlmSayRunner, pull_complete_sentences
+from robot_manage.llm_say import LlmSayRunner
 from robot_manage.mic_buffer import RobotMicRingBuffer
-from robot_manage.move_catalog import VoiceAssistantJsonError, parse_voice_assistant_json
+from robot_manage.motion_reactions import select_reaction_move_for_speech
+from robot_manage.move_catalog import VoiceAssistantJsonError, parse_voice_assistant_output
 from robot_manage.ollama_voice import stream_text_chat_messages
 from robot_manage.settings import (
     mlx_voice_min_utterance_ms,
@@ -29,6 +30,7 @@ from robot_manage.settings import (
     ollama_voice_max_history_messages,
     ollama_voice_say_post_ms,
     ollama_voice_text_system_prompt,
+    robot_manage_reaction_moves_enabled,
 )
 from robot_manage.voice_command_parser import format_command_speech, try_parse_voice_command
 from robot_manage.wav_utils import stereo_float32_to_mono_float32
@@ -114,12 +116,16 @@ def _mlx_transcribe_fn(
     return mlx_whisper.transcribe(mono, path_or_hf_repo=path_or_hf_repo, **kw)
 
 
-def try_create_mlx_pipeline(buf: RobotMicRingBuffer, mini: Any | None = None) -> MlxLiveVoicePipeline | None:
+def try_create_mlx_pipeline(
+    buf: RobotMicRingBuffer,
+    mini: Any | None = None,
+    controls: dict[str, Any] | None = None,
+) -> MlxLiveVoicePipeline | None:
     try:
         import mlx_whisper  # noqa: F401
     except ImportError:
         return None
-    return MlxLiveVoicePipeline(buf, mini=mini)
+    return MlxLiveVoicePipeline(buf, mini=mini, controls=controls)
 
 
 async def ensure_mlx_voice_pipeline(mic_state: dict[str, Any]) -> MlxLiveVoicePipeline | None:
@@ -132,7 +138,7 @@ async def ensure_mlx_voice_pipeline(mic_state: dict[str, Any]) -> MlxLiveVoicePi
         buf = mic_state.get("buffer")
         if buf is None:
             return None
-        created = try_create_mlx_pipeline(buf, mic_state.get("mini"))
+        created = try_create_mlx_pipeline(buf, mic_state.get("mini"), mic_state)
         if created is None:
             return None
         await created.start()
@@ -144,9 +150,16 @@ async def ensure_mlx_voice_pipeline(mic_state: dict[str, Any]) -> MlxLiveVoicePi
 
 
 class MlxLiveVoicePipeline:
-    def __init__(self, buf: RobotMicRingBuffer, *, mini: Any | None = None) -> None:
+    def __init__(
+        self,
+        buf: RobotMicRingBuffer,
+        *,
+        mini: Any | None = None,
+        controls: dict[str, Any] | None = None,
+    ) -> None:
         self._buf = buf
         self._mini = mini
+        self._controls: dict[str, Any] = controls if controls is not None else {}
         self._qs: set[asyncio.Queue[dict[str, Any]]] = set()
         self._q_lock = asyncio.Lock()
         self._llm_lock = asyncio.Lock()
@@ -162,7 +175,15 @@ class MlxLiveVoicePipeline:
         self._utt_chunks: list[np.ndarray] = []
         self._in_utt = False
         self._silence_ms = 0.0
-        self._say = LlmSayRunner(mic_hooks=self)
+        if mini is not None:
+            self._say = LlmSayRunner(
+                mic_hooks=self,
+                reachy_host=getattr(getattr(mini, "client", None), "host", None),
+                reachy_port=int(getattr(getattr(mini, "client", None), "port", 8000) or 8000),
+                is_output_muted=lambda: bool(self._controls.get("audio_output_muted")),
+            )
+        else:
+            self._say = LlmSayRunner(mic_hooks=self)
         self._move_spec_this_turn: tuple[str, str] | None = None
         self._move_play_task: asyncio.Task[None] | None = None
         self._modes_tools_lock = asyncio.Lock()
@@ -362,7 +383,8 @@ class MlxLiveVoicePipeline:
             )
 
     async def on_tts_end(self) -> None:
-        await self._stop_move_playback()
+        # Do not call ReachyMini.cancel_move here: it runs media_manager.stop_playing() and cuts
+        # daemon speaker audio while TTS may still be playing (play_sound returns when queued).
         await asyncio.sleep(ollama_voice_say_post_ms() / 1000.0)
         self._mic_accept_event.set()
         self._move_spec_this_turn = None
@@ -507,19 +529,18 @@ class MlxLiveVoicePipeline:
                     await self._broadcast({"event": "llm_token", "t": frag})
                 joined = "".join(reply_parts).strip()
                 try:
-                    pair, speech, assistant_content = parse_voice_assistant_json(joined)
+                    pair, speech, assistant_content = parse_voice_assistant_output(joined)
                 except VoiceAssistantJsonError as e:
                     await self._broadcast({"event": "error", "message": f"assistant_json:{e!s}"})
                     self._llm_messages.pop()
                     return
                 if self._say.running and speech.strip() and pair is not None:
                     self._move_spec_this_turn = pair
-                say_buf = speech
-                sents, say_buf = pull_complete_sentences(say_buf)
-                for s in sents:
-                    await self._say.enqueue_sentence(s)
-                if say_buf.strip():
-                    await self._say.enqueue_sentence(say_buf.strip())
+                if self._say.running and speech.strip() and self._move_spec_this_turn is None:
+                    if robot_manage_reaction_moves_enabled():
+                        self._move_spec_this_turn = select_reaction_move_for_speech(speech.strip())
+                if speech.strip():
+                    await self._say.enqueue_sentence(speech.strip())
                 await self._broadcast({"event": "llm_round_end"})
             except asyncio.CancelledError:
                 return

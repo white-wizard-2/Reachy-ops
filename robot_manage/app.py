@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Optional
@@ -27,6 +28,7 @@ from robot_manage.app_ui_hub import AppUiHub
 from robot_manage.camera_feed import MiniCameraPublisher
 from robot_manage.camera_layout import build_camera_layout
 from robot_manage.daemon_preflight import ensure_reachy_mini_daemon_backend_running
+from robot_manage.jpeg_util import bgr_frame_to_jpeg_bytes
 from robot_manage.mic_buffer import MicCollectorThread, RobotMicRingBuffer
 from robot_manage.mlx_voice_pipeline import ensure_mlx_voice_pipeline, try_create_mlx_pipeline
 from robot_manage.robot_state_hub import RobotStateHub, robot_state_poll_loop
@@ -34,6 +36,17 @@ from robot_manage.settings import ollama_base_url, ollama_model
 
 _MJPEG_BOUNDARY = b"frame"
 _STREAM_FRAME_INTERVAL_S = 1.0 / 25.0
+
+
+def _ensure_black_jpeg(mic_state: dict[str, Any]) -> bytes:
+    cached = mic_state.get("_black_jpeg")
+    if isinstance(cached, (bytes, bytearray)):
+        return bytes(cached)
+    import numpy as np
+
+    jpeg = bgr_frame_to_jpeg_bytes(np.zeros((64, 48, 3), dtype=np.uint8), quality=65)
+    mic_state["_black_jpeg"] = jpeg
+    return jpeg
 
 
 class VoiceModesToolsBody(BaseModel):
@@ -53,7 +66,17 @@ def create_app(
     static_path = static_dir if static_dir is not None else Path(__file__).resolve().parent / "static"
     mini_ref: list[Optional[ReachyMini]] = [None]
     pub_ref: list[Optional[MiniCameraPublisher]] = [None]
-    mic_state: dict[str, Any] = {"buffer": None, "collector": None, "mlx_pipeline": None, "mini": None}
+    mic_state: dict[str, Any] = {
+        "buffer": None,
+        "collector": None,
+        "mlx_pipeline": None,
+        "mini": None,
+        "mic_disabled": threading.Event(),
+        "camera_enabled": True,
+        "bot_awake": True,
+        "audio_output_muted": False,
+        "_black_jpeg": None,
+    }
     ui_hub = AppUiHub()
     mic_state["voice_ui_notify"] = ui_hub.voice_notify
 
@@ -67,6 +90,55 @@ def create_app(
     state_poll_task: list[Optional[asyncio.Task[None]]] = [None]
     ui_metrics_task: list[Optional[asyncio.Task[None]]] = [None]
     voice_live_forward_tasks: dict[int, asyncio.Task[None]] = {}
+
+    async def broadcast_device_controls() -> None:
+        md = mic_state["mic_disabled"]
+        await ui_hub.broadcast_json(
+            {
+                "type": "device_controls",
+                "mic_enabled": not md.is_set(),
+                "camera_enabled": bool(mic_state.get("camera_enabled", True)),
+                "bot_awake": bool(mic_state.get("bot_awake", True)),
+                "audio_output_enabled": not bool(mic_state.get("audio_output_muted", False)),
+            }
+        )
+
+    async def apply_device_toggle(dev: object) -> None:
+        if not isinstance(dev, str) or dev not in ("mic", "camera", "bot", "audio_output"):
+            return
+        mini = mini_ref[0]
+        if dev == "mic":
+            md = mic_state["mic_disabled"]
+            if md.is_set():
+                md.clear()
+            else:
+                md.set()
+                buf = mic_state.get("buffer")
+                if isinstance(buf, RobotMicRingBuffer):
+                    buf.clear()
+        elif dev == "camera":
+            cur = bool(mic_state.get("camera_enabled", True))
+            nxt = not cur
+            mic_state["camera_enabled"] = nxt
+            pub = pub_ref[0]
+            if pub is not None:
+                if nxt:
+                    pub.start()
+                else:
+                    pub.stop()
+        elif dev == "bot":
+            if mini is None:
+                await broadcast_device_controls()
+                return
+            if mic_state.get("bot_awake", True):
+                await asyncio.to_thread(mini.goto_sleep)
+                mic_state["bot_awake"] = False
+            else:
+                await asyncio.to_thread(mini.wake_up)
+                mic_state["bot_awake"] = True
+        elif dev == "audio_output":
+            mic_state["audio_output_muted"] = not bool(mic_state.get("audio_output_muted", False))
+        await broadcast_device_controls()
 
     async def build_ui_snapshot() -> dict[str, Any]:
         mini = mini_ref[0]
@@ -108,6 +180,7 @@ def create_app(
             modes_tools = await pipe.modes_tools_snapshot()
             conversation = pipe.conversation_messages_for_client()
         robot_state = state_hub.public_message()
+        md = mic_state["mic_disabled"]
         return {
             "layout": layout,
             "llm_config": llm_config,
@@ -117,6 +190,12 @@ def create_app(
             "modes_tools": modes_tools,
             "conversation": conversation,
             "robot_state": robot_state,
+            "device_controls": {
+                "mic_enabled": not md.is_set(),
+                "camera_enabled": bool(mic_state.get("camera_enabled", True)),
+                "bot_awake": bool(mic_state.get("bot_awake", True)),
+                "audio_output_enabled": not bool(mic_state.get("audio_output_muted", False)),
+            },
         }
 
     async def ui_metrics_broadcast_loop() -> None:
@@ -186,11 +265,11 @@ def create_app(
         if mini.media.audio is not None:
             await asyncio.to_thread(mini.media.start_recording)
             mic_buf = RobotMicRingBuffer()
-            mic_collector = MicCollectorThread(mini, mic_buf)
+            mic_collector = MicCollectorThread(mini, mic_buf, pause=mic_state["mic_disabled"])
             mic_state["buffer"] = mic_buf
             mic_state["collector"] = mic_collector
             mic_collector.start()
-            mlx_pipe = try_create_mlx_pipeline(mic_buf, mini)
+            mlx_pipe = try_create_mlx_pipeline(mic_buf, mini, mic_state)
             if mlx_pipe is not None:
                 mic_state["mlx_pipeline"] = mlx_pipe
                 mlx_pipe.set_ws_voice_notify(ui_hub.voice_notify)
@@ -357,11 +436,14 @@ def create_app(
     async def camera_mjpeg() -> StreamingResponse:
         async def stream() -> AsyncIterator[bytes]:
             while True:
-                pub = pub_ref[0]
-                if pub is None:
-                    await asyncio.sleep(0.05)
-                    continue
-                chunk = pub.get_latest_jpeg()
+                if not mic_state.get("camera_enabled", True):
+                    chunk = _ensure_black_jpeg(mic_state)
+                else:
+                    pub = pub_ref[0]
+                    if pub is None:
+                        await asyncio.sleep(0.05)
+                        continue
+                    chunk = pub.get_latest_jpeg()
                 if chunk is None:
                     await asyncio.sleep(0.02)
                     continue
@@ -411,6 +493,8 @@ def create_app(
                     else:
                         lay = build_camera_layout(mini)
                     await ui_hub.broadcast_json({"type": "layout", "payload": lay})
+                elif mtype == "device_toggle":
+                    await apply_device_toggle(msg.get("device"))
                 elif mtype == "modes_tools_set":
                     pipe = await ensure_mlx_voice_pipeline(mic_state)
                     if pipe is None:

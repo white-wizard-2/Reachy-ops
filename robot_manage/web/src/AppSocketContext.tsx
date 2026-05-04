@@ -23,6 +23,13 @@ type PipeInfo = {
   mlx_live_ready: boolean;
 };
 
+export type DeviceControlsState = {
+  mic_enabled: boolean;
+  camera_enabled: boolean;
+  bot_awake: boolean;
+  audio_output_enabled: boolean;
+};
+
 export type RobotStateMsg = {
   type: "robot_state";
   data: Record<string, unknown> | null;
@@ -39,6 +46,12 @@ type SnapshotPayload = {
   modes_tools: { mode: string | null; tools: string[] };
   conversation: { role: string; content: string }[];
   robot_state: RobotStateMsg;
+  device_controls?: {
+    mic_enabled?: boolean;
+    camera_enabled?: boolean;
+    bot_awake?: boolean;
+    audio_output_enabled?: boolean;
+  };
 };
 
 type AppSocketState = {
@@ -52,7 +65,25 @@ type AppSocketState = {
   voiceMeter: MeterPayload;
   modesTools: { mode: string | null; tools: string[] };
   conversation: { role: string; content: string }[];
+  deviceControls: DeviceControlsState;
 };
+
+const defaultDeviceControls: DeviceControlsState = {
+  mic_enabled: true,
+  camera_enabled: true,
+  bot_awake: true,
+  audio_output_enabled: true,
+};
+
+function normalizeDeviceControls(raw: SnapshotPayload["device_controls"]): DeviceControlsState {
+  if (!raw) return { ...defaultDeviceControls };
+  return {
+    mic_enabled: typeof raw.mic_enabled === "boolean" ? raw.mic_enabled : true,
+    camera_enabled: typeof raw.camera_enabled === "boolean" ? raw.camera_enabled : true,
+    bot_awake: typeof raw.bot_awake === "boolean" ? raw.bot_awake : true,
+    audio_output_enabled: typeof raw.audio_output_enabled === "boolean" ? raw.audio_output_enabled : true,
+  };
+}
 
 const initial: AppSocketState = {
   connected: false,
@@ -65,6 +96,7 @@ const initial: AppSocketState = {
   voiceMeter: { levels: [], peak: 0 },
   modesTools: { mode: null, tools: [] },
   conversation: [],
+  deviceControls: { ...defaultDeviceControls },
 };
 
 type Action =
@@ -78,7 +110,8 @@ type Action =
   | { kind: "voice_status"; v: VoiceStatus }
   | { kind: "voice_pipeline"; v: PipeInfo }
   | { kind: "modes_tools"; v: { mode: string | null; tools: string[] } }
-  | { kind: "conversation"; v: { role: string; content: string }[] };
+  | { kind: "conversation"; v: { role: string; content: string }[] }
+  | { kind: "device_controls"; v: DeviceControlsState };
 
 function reducer(s: AppSocketState, a: Action): AppSocketState {
   switch (a.kind) {
@@ -99,6 +132,7 @@ function reducer(s: AppSocketState, a: Action): AppSocketState {
         modesTools: a.v.modes_tools,
         conversation: a.v.conversation,
         robotState: a.v.robot_state,
+        deviceControls: normalizeDeviceControls(a.v.device_controls),
       };
     case "layout":
       return { ...s, layout: a.v };
@@ -114,6 +148,8 @@ function reducer(s: AppSocketState, a: Action): AppSocketState {
       return { ...s, modesTools: a.v };
     case "conversation":
       return { ...s, conversation: a.v };
+    case "device_controls":
+      return { ...s, deviceControls: a.v };
     default:
       return s;
   }
@@ -179,6 +215,22 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
         if (t === "snapshot") {
           const { type: _t, ...rest } = msg;
           dispatch({ kind: "snapshot", v: rest as SnapshotPayload });
+          return;
+        }
+        if (t === "device_controls") {
+          const mic = msg.mic_enabled;
+          const cam = msg.camera_enabled;
+          const bot = msg.bot_awake;
+          const audio = msg.audio_output_enabled;
+          dispatch({
+            kind: "device_controls",
+            v: {
+              mic_enabled: typeof mic === "boolean" ? mic : true,
+              camera_enabled: typeof cam === "boolean" ? cam : true,
+              bot_awake: typeof bot === "boolean" ? bot : true,
+              audio_output_enabled: typeof audio === "boolean" ? audio : true,
+            },
+          });
           return;
         }
         if (t === "layout") {

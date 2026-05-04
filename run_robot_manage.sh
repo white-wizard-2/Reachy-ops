@@ -9,6 +9,9 @@ cd "$ROOT"
 export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://192.168.1.228:11434}"
 export OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b-mlx}"
 export OLLAMA_VOICE_SAY=1 
+export OLLAMA_VOICE_SAY_TARGET="${OLLAMA_VOICE_SAY_TARGET:-reachy}"
+# Optional: OLLAMA_VOICE_JSON_MOVES=1 — legacy JSON speech+move; default plain text TTS (see pollen-robotics/reachy_mini_conversation_app for tool-queued motion).
+export ROBOT_MANAGE_REACTION_MOVES="${ROBOT_MANAGE_REACTION_MOVES:-1}"
 
 if [[ ! -d .venv ]]; then
   python3 -m venv .venv

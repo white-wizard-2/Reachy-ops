@@ -4,8 +4,10 @@ from robot_manage.move_catalog import (
     VoiceAssistantJsonError,
     move_instruction_appendix,
     parse_voice_assistant_json,
+    parse_voice_assistant_output,
     validated_move,
 )
+from robot_manage.settings import ollama_voice_text_system_prompt
 
 
 def test_validated_move_emotion() -> None:
@@ -91,3 +93,46 @@ def test_voice_prompt_lists_real_ids() -> None:
     assert "friendly_greeting" not in ap
     assert "move MUST be non-null" in ap
     assert "How are you doing today?" in ap
+
+
+def test_parse_voice_assistant_output_plain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OLLAMA_VOICE_JSON_MOVES", raising=False)
+    pair, speech, hist = parse_voice_assistant_output("  Hello from Reachy.  ")
+    assert pair is None
+    assert speech == "Hello from Reachy."
+    assert hist == "Hello from Reachy."
+
+
+def test_parse_voice_assistant_output_json_speech_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OLLAMA_VOICE_JSON_MOVES", raising=False)
+    raw = '{"speech":"Hi there.","move":{"library":"emotions","id":"cheerful1"}}'
+    pair, speech, hist = parse_voice_assistant_output(raw)
+    assert pair is None
+    assert speech == "Hi there."
+    assert hist == "Hi there."
+
+
+def test_parse_voice_assistant_output_legacy_json_moves(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OLLAMA_VOICE_JSON_MOVES", "1")
+    raw = '{"speech":"Hi there.","move":{"library":"emotions","id":"cheerful1"}}'
+    pair, speech, hist = parse_voice_assistant_output(raw)
+    assert pair is not None
+    assert speech == "Hi there."
+    assert "cheerful1" in hist
+
+
+def test_voice_text_system_default_is_plain(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OLLAMA_VOICE_JSON_MOVES", raising=False)
+    monkeypatch.delenv("OLLAMA_VOICE_TEXT_SYSTEM", raising=False)
+    p = ollama_voice_text_system_prompt()
+    assert "plain natural language" in p
+    assert "move MUST be non-null" not in p
+
+
+def test_voice_text_system_json_moves_appends_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OLLAMA_VOICE_JSON_MOVES", "1")
+    monkeypatch.delenv("OLLAMA_VOICE_TEXT_SYSTEM", raising=False)
+    p = ollama_voice_text_system_prompt()
+    assert "plain natural language" in p
+    assert "move MUST be non-null" in p
+

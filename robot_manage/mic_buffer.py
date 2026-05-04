@@ -146,6 +146,12 @@ class RobotMicRingBuffer:
             new_cursor = glob_start + taken
             return out, new_cursor
 
+    def clear(self) -> None:
+        """Drop all buffered samples (e.g. when mic capture is paused)."""
+
+        with self._lock:
+            self._chunks.clear()
+
     def meter_histogram(self, *, wall_seconds: float = 0.35, bars: int = 40) -> tuple[list[float], float]:
         """RMS per time segment over recent audio → bar heights in ``[0, 1]`` and overall peak."""
         audio = self.slice_last_audio_seconds(wall_seconds)
@@ -170,17 +176,19 @@ class RobotMicRingBuffer:
 class MicCollectorThread(threading.Thread):
     """Background drain of ``mini.media.get_audio_sample`` into ``RobotMicRingBuffer``."""
 
-    def __init__(self, mini: Any, buf: RobotMicRingBuffer) -> None:
+    def __init__(self, mini: Any, buf: RobotMicRingBuffer, *, pause: threading.Event) -> None:
         super().__init__(name="robot_manage_mic_ring", daemon=True)
         self._mini = mini
         self._buf = buf
+        self._pause = pause
         self._stop = threading.Event()
 
     def run(self) -> None:
         while not self._stop.is_set():
             try:
                 sample = self._mini.media.get_audio_sample()
-                self._buf.push(sample)
+                if not self._pause.is_set():
+                    self._buf.push(sample)
             except Exception:  # noqa: BLE001 — keep collector alive if the SDK hiccups
                 pass
             time.sleep(0.001)
