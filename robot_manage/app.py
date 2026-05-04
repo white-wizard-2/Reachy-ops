@@ -75,6 +75,7 @@ def create_app(
         "camera_enabled": True,
         "bot_awake": True,
         "audio_output_muted": False,
+        "idle_look_sweep_enabled": False,
         "_black_jpeg": None,
     }
     ui_hub = AppUiHub()
@@ -100,11 +101,18 @@ def create_app(
                 "camera_enabled": bool(mic_state.get("camera_enabled", True)),
                 "bot_awake": bool(mic_state.get("bot_awake", True)),
                 "audio_output_enabled": not bool(mic_state.get("audio_output_muted", False)),
+                "idle_look_sweep_enabled": bool(mic_state.get("idle_look_sweep_enabled", False)),
             }
         )
 
     async def apply_device_toggle(dev: object) -> None:
-        if not isinstance(dev, str) or dev not in ("mic", "camera", "bot", "audio_output"):
+        if not isinstance(dev, str) or dev not in (
+            "mic",
+            "camera",
+            "bot",
+            "audio_output",
+            "idle_look_sweep",
+        ):
             return
         mini = mini_ref[0]
         if dev == "mic":
@@ -138,6 +146,20 @@ def create_app(
                 mic_state["bot_awake"] = True
         elif dev == "audio_output":
             mic_state["audio_output_muted"] = not bool(mic_state.get("audio_output_muted", False))
+        elif dev == "idle_look_sweep":
+            was = bool(mic_state.get("idle_look_sweep_enabled", False))
+            mic_state["idle_look_sweep_enabled"] = not was
+            if was:
+                m = mini_ref[0]
+                if m is not None:
+                    try:
+                        m.cancel_move()
+                    except Exception:
+                        pass
+            if not was:
+                pipe = await ensure_mlx_voice_pipeline(mic_state)
+                if pipe is not None:
+                    pipe.trigger_idle_look_sweep()
         await broadcast_device_controls()
 
     async def build_ui_snapshot() -> dict[str, Any]:
@@ -195,6 +217,7 @@ def create_app(
                 "camera_enabled": bool(mic_state.get("camera_enabled", True)),
                 "bot_awake": bool(mic_state.get("bot_awake", True)),
                 "audio_output_enabled": not bool(mic_state.get("audio_output_muted", False)),
+                "idle_look_sweep_enabled": bool(mic_state.get("idle_look_sweep_enabled", False)),
             },
         }
 

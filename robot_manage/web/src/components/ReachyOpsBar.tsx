@@ -33,6 +33,17 @@ function IconRobot({ className }: { className?: string }) {
   );
 }
 
+function IconScan({ className }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+      <circle cx="12" cy="12" r="3" />
+      <path d="M3 12a9 9 0 0 1 9-9" />
+      <path d="M21 12a9 9 0 0 1-9 9" />
+      <path d="M12 3v2M12 19v2M3 12h2M19 12h2" />
+    </svg>
+  );
+}
+
 function IconSpeaker({ className, muted }: { className?: string; muted: boolean }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -113,6 +124,27 @@ export function ReachyOpsBar() {
         onClick={() => send({ type: "device_toggle", device: "audio_output" })}
       >
         <IconSpeaker className="size-4" muted={!dc.audio_output_enabled} />
+      </Button>
+      <Button
+        type="button"
+        size="icon"
+        variant={dc.idle_look_sweep_enabled ? "default" : "outline"}
+        className={cn("h-9 w-9", dc.idle_look_sweep_enabled && "ring-1 ring-primary/40")}
+        disabled={busy}
+        aria-pressed={dc.idle_look_sweep_enabled}
+        aria-label={
+          dc.idle_look_sweep_enabled
+            ? "Idle look sweep on — empty LLM reply runs another scan (click to disable)"
+            : "Idle look sweep off — click to run a scan now and enable empty-reply scans"
+        }
+        title={
+          dc.idle_look_sweep_enabled
+            ? "Idle look sweep ON: base yaw + head + antennas loop until you turn this off; also on empty LLM text"
+            : "Idle look sweep OFF: click to start continuous base + head + antenna scanning"
+        }
+        onClick={() => send({ type: "device_toggle", device: "idle_look_sweep" })}
+      >
+        <IconScan className="size-4" />
       </Button>
     </div>
   );

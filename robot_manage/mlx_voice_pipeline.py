@@ -9,11 +9,16 @@ from typing import Any, Awaitable, Callable, Optional
 import httpx
 import numpy as np
 
-from robot_manage.llm_say import LlmSayRunner
+from robot_manage.idle_look_sweep import run_idle_look_sweep_pass
+from robot_manage.llm_say import LlmSayRunner, pull_complete_sentences
 from robot_manage.mic_buffer import RobotMicRingBuffer
 from robot_manage.motion_reactions import select_reaction_move_for_speech
 from robot_manage.move_catalog import VoiceAssistantJsonError, parse_voice_assistant_output
-from robot_manage.ollama_voice import stream_text_chat_messages
+from robot_manage.ollama_voice import (
+    complete_chat_with_robot_tools,
+    stream_text_chat_messages,
+    yield_text_as_token_chunks,
+)
 from robot_manage.settings import (
     mlx_voice_min_utterance_ms,
     mlx_voice_silence_end_ms,
@@ -28,6 +33,7 @@ from robot_manage.settings import (
     ollama_base_url,
     ollama_model,
     ollama_voice_max_history_messages,
+    ollama_voice_robot_tools_enabled,
     ollama_voice_say_post_ms,
     ollama_voice_text_system_prompt,
     robot_manage_reaction_moves_enabled,
@@ -92,11 +98,43 @@ def _conversation_for_sse(messages: list[dict[str, Any]]) -> list[dict[str, str]
     out: list[dict[str, str]] = []
     for i, m in enumerate(messages):
         role = str(m.get("role", ""))
+        if role == "tool":
+            continue
+        if role == "user" and m.get("images"):
+            continue
+        if role == "assistant" and not str(m.get("content", "")).strip() and m.get("tool_calls"):
+            continue
         content = str(m.get("content", ""))
         if role == "system" and i == 0 and len(content) > 480:
             content = content[:480] + "…"
         out.append({"role": role, "content": content})
     return out
+
+
+def _sanitize_tts_chunk(text: str) -> str:
+    t = text.strip()
+    for sub in ("(calling tools)", "(Calling tools)", "calling tools"):
+        t = t.replace(sub, "")
+    return " ".join(t.split())
+
+
+async def _enqueue_speech_sentences(say: LlmSayRunner, speech: str) -> None:
+    """Queue TTS one sentence at a time; strip UI/tool placeholder phrases."""
+
+    if not say.running:
+        return
+    raw = _sanitize_tts_chunk(speech)
+    if not raw:
+        return
+    buf = raw if raw[-1] in " \t\n\r" else raw + " "
+    sents, rem = pull_complete_sentences(buf)
+    chunks = [_sanitize_tts_chunk(c) for c in sents if _sanitize_tts_chunk(c)]
+    tail = _sanitize_tts_chunk(rem)
+    if tail:
+        chunks.append(tail)
+    for c in chunks:
+        if c:
+            await say.enqueue_sentence(c)
 
 
 def _preload_mlx_whisper_model(path_or_hf_repo: str, language: str | None) -> None:
@@ -190,6 +228,7 @@ class MlxLiveVoicePipeline:
         self._active_mode: str | None = None
         self._tools_on: set[str] = set()
         self._ws_voice_notify: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None
+        self._idle_look_sweep_task: asyncio.Task[None] | None = None
 
     def set_ws_voice_notify(self, fn: Optional[Callable[[dict[str, Any]], Awaitable[None]]]) -> None:
         """Optional fan-out for UI (modes/conversation/errors); not used for per-token streaming."""
@@ -288,10 +327,8 @@ class MlxLiveVoicePipeline:
 
     def _trim_history(self) -> None:
         cap = ollama_voice_max_history_messages()
-        while len(self._llm_messages) > cap:
-            if len(self._llm_messages) <= 2:
-                break
-            del self._llm_messages[1:3]
+        while len(self._llm_messages) > cap and len(self._llm_messages) > 2:
+            del self._llm_messages[1]
 
     async def start(self) -> None:
         self._asr_cursor = self._buf.end_sample_index()
@@ -325,25 +362,89 @@ class MlxLiveVoicePipeline:
         self._tasks.clear()
         await self._say.aclose()
         await self._stop_move_playback()
+        t_idle = self._idle_look_sweep_task
+        if t_idle is not None and not t_idle.done():
+            t_idle.cancel()
+            try:
+                await t_idle
+            except asyncio.CancelledError:
+                pass
+        self._idle_look_sweep_task = None
         self._mic_accept_event.set()
         if self._client is not None:
             await self._client.aclose()
             self._client = None
 
-    async def _stop_move_playback(self) -> None:
-        if self._mini is not None:
+    async def _stop_move_playback(self, *, cancel_daemon_motion: bool = True) -> None:
+        """Stop optional ``RecordedMoves`` playback; optionally request daemon ``cancel_move``."""
+
+        t = self._move_play_task
+        self._move_play_task = None
+        had_running_play = t is not None and not t.done()
+        if had_running_play and self._mini is not None:
             try:
                 self._mini.cancel_move()
             except Exception:
                 pass
-        t = self._move_play_task
-        self._move_play_task = None
         if t is not None and not t.done():
             t.cancel()
             try:
                 await t
             except asyncio.CancelledError:
                 pass
+        if (
+            cancel_daemon_motion
+            and not had_running_play
+            and self._mini is not None
+        ):
+            try:
+                self._mini.cancel_move()
+            except Exception:
+                pass
+
+    def trigger_idle_look_sweep(self) -> None:
+        """Start looping head + body + antenna sweeps until disabled (no-op without ``mini``)."""
+
+        if self._mini is None:
+            return
+        t = self._idle_look_sweep_task
+        if t is not None and not t.done():
+            return
+        self._idle_look_sweep_task = asyncio.create_task(
+            self._idle_look_sweep_worker(),
+            name="idle_look_sweep",
+        )
+
+    def _maybe_start_idle_look_sweep(self) -> None:
+        if not bool(self._controls.get("idle_look_sweep_enabled")):
+            return
+        self.trigger_idle_look_sweep()
+
+    async def _idle_look_sweep_worker(self) -> None:
+        me = asyncio.current_task()
+        mini = self._mini
+        if mini is None:
+            return
+        try:
+            await self._stop_move_playback(cancel_daemon_motion=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            pass
+        try:
+
+            def _sweep_armed() -> bool:
+                return bool(self._controls.get("idle_look_sweep_enabled"))
+
+            while _sweep_armed() and not self._stop.is_set():
+                await asyncio.to_thread(run_idle_look_sweep_pass, mini, _sweep_armed)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            await self._broadcast({"event": "error", "message": f"idle_look_sweep:{e!s}"})
+        finally:
+            if self._idle_look_sweep_task is me:
+                self._idle_look_sweep_task = None
 
     async def _play_move_worker(self, hf: str, move_name: str) -> None:
         mini = self._mini
@@ -505,8 +606,8 @@ class MlxLiveVoicePipeline:
         if client is None:
             return
         async with self._llm_lock:
+            turn_base = len(self._llm_messages)
             self._llm_messages.append({"role": "user", "content": user_text})
-            messages = [dict(m) for m in self._llm_messages]
             await self._broadcast(
                 {
                     "event": "conversation",
@@ -515,24 +616,56 @@ class MlxLiveVoicePipeline:
             )
             reply_parts: list[str] = []
             self._move_spec_this_turn = None
+            use_robot_tools = (
+                self._mini is not None
+                and ollama_voice_robot_tools_enabled()
+            )
             try:
                 await self._broadcast({"event": "llm_round_start"})
-                async for frag in stream_text_chat_messages(
-                    client=client,
-                    base_url=base,
-                    model=model,
-                    messages=messages,
-                ):
-                    if self._stop.is_set():
-                        break
-                    reply_parts.append(frag)
-                    await self._broadcast({"event": "llm_token", "t": frag})
-                joined = "".join(reply_parts).strip()
+                if use_robot_tools:
+                    joined = (
+                        await complete_chat_with_robot_tools(
+                            client=client,
+                            base_url=base,
+                            model=model,
+                            conv=self._llm_messages,
+                            mini=self._mini,
+                        )
+                    ).strip()
+                    async for frag in yield_text_as_token_chunks(joined):
+                        if self._stop.is_set():
+                            break
+                        reply_parts.append(frag)
+                        await self._broadcast({"event": "llm_token", "t": frag})
+                else:
+                    messages = [dict(m) for m in self._llm_messages]
+                    async for frag in stream_text_chat_messages(
+                        client=client,
+                        base_url=base,
+                        model=model,
+                        messages=messages,
+                    ):
+                        if self._stop.is_set():
+                            break
+                        reply_parts.append(frag)
+                        await self._broadcast({"event": "llm_token", "t": frag})
+                    joined = "".join(reply_parts).strip()
+                if not joined.strip():
+                    await self._broadcast({"event": "llm_round_end"})
+                    self._maybe_start_idle_look_sweep()
+                    self._trim_history()
+                    await self._broadcast(
+                        {
+                            "event": "conversation",
+                            "messages": _conversation_for_sse(self._llm_messages),
+                        }
+                    )
+                    return
                 try:
                     pair, speech, assistant_content = parse_voice_assistant_output(joined)
                 except VoiceAssistantJsonError as e:
                     await self._broadcast({"event": "error", "message": f"assistant_json:{e!s}"})
-                    self._llm_messages.pop()
+                    del self._llm_messages[turn_base:]
                     return
                 if self._say.running and speech.strip() and pair is not None:
                     self._move_spec_this_turn = pair
@@ -540,16 +673,18 @@ class MlxLiveVoicePipeline:
                     if robot_manage_reaction_moves_enabled():
                         self._move_spec_this_turn = select_reaction_move_for_speech(speech.strip())
                 if speech.strip():
-                    await self._say.enqueue_sentence(speech.strip())
+                    await _enqueue_speech_sentences(self._say, speech)
                 await self._broadcast({"event": "llm_round_end"})
             except asyncio.CancelledError:
                 return
             except Exception as e:
                 await self._broadcast({"event": "error", "message": f"ollama_text:{e!s}"})
-                self._llm_messages.pop()
+                del self._llm_messages[turn_base:]
                 return
-            reply = assistant_content
-            self._llm_messages.append({"role": "assistant", "content": reply})
+            if self._llm_messages and self._llm_messages[-1].get("role") == "assistant":
+                self._llm_messages[-1]["content"] = assistant_content
+            else:
+                self._llm_messages.append({"role": "assistant", "content": assistant_content})
             self._trim_history()
             await self._broadcast(
                 {

@@ -5,7 +5,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
-
+export ROBOT_HOST=192.168.1.191
 export OLLAMA_BASE_URL="${OLLAMA_BASE_URL:-http://192.168.1.228:11434}"
 export OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:e4b-mlx}"
 export OLLAMA_VOICE_SAY=1 

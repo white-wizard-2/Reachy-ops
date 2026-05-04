@@ -117,6 +117,13 @@ def robot_manage_reaction_moves_enabled() -> bool:
     return raw in ("1", "true", "yes")
 
 
+def ollama_voice_robot_tools_enabled() -> bool:
+    """``OLLAMA_VOICE_ROBOT_TOOLS=1`` — expose motors + camera to Ollama as tools (default on)."""
+
+    raw = os.environ.get("OLLAMA_VOICE_ROBOT_TOOLS", "1").strip().lower()
+    return raw in ("1", "true", "yes")
+
+
 def ollama_voice_text_system_prompt() -> str:
     from robot_manage.move_catalog import move_instruction_appendix
 
@@ -134,6 +141,10 @@ def ollama_voice_text_system_prompt() -> str:
         "Do not invent camera feeds, coordinates, sectors, or surveillance-style fiction unless they ask."
     )
     base = os.environ.get("OLLAMA_VOICE_TEXT_SYSTEM", default)
+    if ollama_voice_robot_tools_enabled():
+        from robot_manage.reachy_llm_tools import robot_tools_system_appendix
+
+        base = base + "\n\n" + robot_tools_system_appendix()
     if ollama_voice_json_moves_enabled():
         return base + "\n\n" + move_instruction_appendix()
     return base

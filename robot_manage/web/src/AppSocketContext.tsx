@@ -28,6 +28,8 @@ export type DeviceControlsState = {
   camera_enabled: boolean;
   bot_awake: boolean;
   audio_output_enabled: boolean;
+  /** When on, empty LLM reply triggers a head + antenna scan on the robot. */
+  idle_look_sweep_enabled: boolean;
 };
 
 export type RobotStateMsg = {
@@ -51,6 +53,7 @@ type SnapshotPayload = {
     camera_enabled?: boolean;
     bot_awake?: boolean;
     audio_output_enabled?: boolean;
+    idle_look_sweep_enabled?: boolean;
   };
 };
 
@@ -73,6 +76,7 @@ const defaultDeviceControls: DeviceControlsState = {
   camera_enabled: true,
   bot_awake: true,
   audio_output_enabled: true,
+  idle_look_sweep_enabled: false,
 };
 
 function normalizeDeviceControls(raw: SnapshotPayload["device_controls"]): DeviceControlsState {
@@ -82,6 +86,8 @@ function normalizeDeviceControls(raw: SnapshotPayload["device_controls"]): Devic
     camera_enabled: typeof raw.camera_enabled === "boolean" ? raw.camera_enabled : true,
     bot_awake: typeof raw.bot_awake === "boolean" ? raw.bot_awake : true,
     audio_output_enabled: typeof raw.audio_output_enabled === "boolean" ? raw.audio_output_enabled : true,
+    idle_look_sweep_enabled:
+      typeof raw.idle_look_sweep_enabled === "boolean" ? raw.idle_look_sweep_enabled : false,
   };
 }
 
@@ -222,6 +228,7 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
           const cam = msg.camera_enabled;
           const bot = msg.bot_awake;
           const audio = msg.audio_output_enabled;
+          const sweep = msg.idle_look_sweep_enabled;
           dispatch({
             kind: "device_controls",
             v: {
@@ -229,6 +236,7 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
               camera_enabled: typeof cam === "boolean" ? cam : true,
               bot_awake: typeof bot === "boolean" ? bot : true,
               audio_output_enabled: typeof audio === "boolean" ? audio : true,
+              idle_look_sweep_enabled: typeof sweep === "boolean" ? sweep : false,
             },
           });
           return;
