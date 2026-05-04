@@ -26,6 +26,7 @@ from reachy_mini import ReachyMini
 from robot_manage.app_ui_hub import AppUiHub
 from robot_manage.camera_feed import MiniCameraPublisher
 from robot_manage.camera_layout import build_camera_layout
+from robot_manage.daemon_preflight import ensure_reachy_mini_daemon_backend_running
 from robot_manage.mic_buffer import MicCollectorThread, RobotMicRingBuffer
 from robot_manage.mlx_voice_pipeline import ensure_mlx_voice_pipeline, try_create_mlx_pipeline
 from robot_manage.robot_state_hub import RobotStateHub, robot_state_poll_loop
@@ -47,6 +48,7 @@ def create_app(
     connection_mode: str,
     media_backend: str,
     static_dir: Optional[Path] = None,
+    skip_daemon_wake: bool = False,
 ) -> FastAPI:
     static_path = static_dir if static_dir is not None else Path(__file__).resolve().parent / "static"
     mini_ref: list[Optional[ReachyMini]] = [None]
@@ -168,6 +170,8 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        if not skip_daemon_wake:
+            await ensure_reachy_mini_daemon_backend_running(robot_host, robot_port)
         mini = ReachyMini(
             host=robot_host,
             port=robot_port,

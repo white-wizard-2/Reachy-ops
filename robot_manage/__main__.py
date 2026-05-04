@@ -43,6 +43,11 @@ def main() -> None:
         default=None,
         help="Directory with built frontend (default: robot_manage/static)",
     )
+    p.add_argument(
+        "--skip-daemon-wake",
+        action="store_true",
+        help="Do not POST /api/daemon/start when the robot backend is stopped (SDK may time out on /ws/sdk).",
+    )
     args = p.parse_args()
 
     app = create_app(
@@ -51,6 +56,7 @@ def main() -> None:
         connection_mode=args.connection_mode,
         media_backend=args.media_backend,
         static_dir=args.static_dir,
+        skip_daemon_wake=args.skip_daemon_wake,
     )
     uvicorn.run(app, host=args.bind, port=args.port, log_level="info")
 

@@ -44,8 +44,41 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM HUP
 
-# Default bind is 0.0.0.0 (LAN). Pass --bind 127.0.0.1 before "$@" for localhost only.
-python -m robot_manage "$@" &
+# Wireless Reachy Mini quickstart: daemon runs on the robot when powered on.
+# Out of the box, prefer mDNS host; if it isn't reachable, prompt for IP.
+DEFAULT_ROBOT_HOST="${ROBOT_HOST:-reachy-mini.local}"
+DEFAULT_ROBOT_PORT="${ROBOT_PORT:-8000}"
+DEFAULT_CONNECTION_MODE="${ROBOT_CONNECTION_MODE:-network}"
+DEFAULT_MEDIA_BACKEND="${ROBOT_MEDIA_BACKEND:-default}"
+
+# Reachy Mini daemon is FastAPI; /api/health is robot_manage, not the robot.
+can_reach_daemon() {
+  local host="$1"
+  local port="$2"
+  curl -fsS --connect-timeout 2 "http://${host}:${port}/openapi.json" >/dev/null 2>&1
+}
+
+ARGS=("$@")
+if [[ "${#ARGS[@]}" -eq 0 ]]; then
+  if can_reach_daemon "${DEFAULT_ROBOT_HOST}" "${DEFAULT_ROBOT_PORT}"; then
+    ARGS=(--robot-host "${DEFAULT_ROBOT_HOST}" --robot-port "${DEFAULT_ROBOT_PORT}" --connection-mode "${DEFAULT_CONNECTION_MODE}" --media-backend "${DEFAULT_MEDIA_BACKEND}")
+  else
+    cat <<EOF
+Reachy Mini daemon not reachable at http://${DEFAULT_ROBOT_HOST}:${DEFAULT_ROBOT_PORT}
+
+Per the official quickstart, ensure:
+- Reachy Mini is powered on (daemon starts automatically)
+- Your computer and Reachy Mini are on the same network
+
+If mDNS is not working, rerun with the robot IP (from the Reachy Mini app / SDK):
+  ROBOT_HOST=192.168.1.191 ./run_robot_manage.sh
+EOF
+    exit 2
+  fi
+fi
+
+# Default bind is 0.0.0.0 (LAN). Pass --bind 127.0.0.1 before other args for localhost only.
+python -m robot_manage "${ARGS[@]}" &
 MANAGE_PID=$!
 wait "${MANAGE_PID}"
 MANAGE_EXIT=$?
