@@ -30,6 +30,10 @@ export type DeviceControlsState = {
   audio_output_enabled: boolean;
   /** When on, empty LLM reply triggers a head + antenna scan on the robot. */
   idle_look_sweep_enabled: boolean;
+  /** Daemon mic capture level 0–100 (POST ``/api/volume/microphone/set``). */
+  daemon_mic_input_volume: number;
+  /** Daemon speaker output 0–100 (POST ``/api/volume/set``; may play a short test tone). */
+  daemon_speaker_volume: number;
 };
 
 export type RobotStateMsg = {
@@ -54,6 +58,8 @@ type SnapshotPayload = {
     bot_awake?: boolean;
     audio_output_enabled?: boolean;
     idle_look_sweep_enabled?: boolean;
+    daemon_mic_input_volume?: number;
+    daemon_speaker_volume?: number;
   };
 };
 
@@ -77,6 +83,8 @@ const defaultDeviceControls: DeviceControlsState = {
   bot_awake: true,
   audio_output_enabled: true,
   idle_look_sweep_enabled: false,
+  daemon_mic_input_volume: 70,
+  daemon_speaker_volume: 70,
 };
 
 function normalizeDeviceControls(raw: SnapshotPayload["device_controls"]): DeviceControlsState {
@@ -88,6 +96,14 @@ function normalizeDeviceControls(raw: SnapshotPayload["device_controls"]): Devic
     audio_output_enabled: typeof raw.audio_output_enabled === "boolean" ? raw.audio_output_enabled : true,
     idle_look_sweep_enabled:
       typeof raw.idle_look_sweep_enabled === "boolean" ? raw.idle_look_sweep_enabled : false,
+    daemon_mic_input_volume:
+      typeof raw.daemon_mic_input_volume === "number" && Number.isFinite(raw.daemon_mic_input_volume)
+        ? Math.round(raw.daemon_mic_input_volume)
+        : 70,
+    daemon_speaker_volume:
+      typeof raw.daemon_speaker_volume === "number" && Number.isFinite(raw.daemon_speaker_volume)
+        ? Math.round(raw.daemon_speaker_volume)
+        : 70,
   };
 }
 
@@ -229,6 +245,8 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
           const bot = msg.bot_awake;
           const audio = msg.audio_output_enabled;
           const sweep = msg.idle_look_sweep_enabled;
+          const dmic = msg.daemon_mic_input_volume;
+          const dspk = msg.daemon_speaker_volume;
           dispatch({
             kind: "device_controls",
             v: {
@@ -237,6 +255,10 @@ export function AppSocketProvider({ children }: { children: React.ReactNode }) {
               bot_awake: typeof bot === "boolean" ? bot : true,
               audio_output_enabled: typeof audio === "boolean" ? audio : true,
               idle_look_sweep_enabled: typeof sweep === "boolean" ? sweep : false,
+              daemon_mic_input_volume:
+                typeof dmic === "number" && Number.isFinite(dmic) ? Math.round(dmic) : 70,
+              daemon_speaker_volume:
+                typeof dspk === "number" && Number.isFinite(dspk) ? Math.round(dspk) : 70,
             },
           });
           return;

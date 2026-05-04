@@ -1,3 +1,5 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+
 import { useAppSocket } from "@/AppSocketContext";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -64,9 +66,40 @@ export function ReachyOpsBar() {
   const { state, send } = useAppSocket();
   const dc = state.deviceControls;
   const busy = !state.connected;
+  const [micVol, setMicVol] = useState(dc.daemon_mic_input_volume);
+  const [spVol, setSpVol] = useState(dc.daemon_speaker_volume);
+  const micDebounceRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    setMicVol(dc.daemon_mic_input_volume);
+    setSpVol(dc.daemon_speaker_volume);
+  }, [dc.daemon_mic_input_volume, dc.daemon_speaker_volume]);
+
+  const sendMicLevel = useCallback(
+    (v: number) => {
+      send({ type: "audio_levels_set", mic_input_volume: Math.round(v) });
+    },
+    [send],
+  );
+
+  const onMicInput = useCallback(
+    (v: number) => {
+      setMicVol(v);
+      if (micDebounceRef.current != null) window.clearTimeout(micDebounceRef.current);
+      micDebounceRef.current = window.setTimeout(() => sendMicLevel(v), 220);
+    },
+    [sendMicLevel],
+  );
+
+  useEffect(
+    () => () => {
+      if (micDebounceRef.current != null) window.clearTimeout(micDebounceRef.current);
+    },
+    [],
+  );
 
   return (
-    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2">
+    <div className="flex w-full max-w-full flex-nowrap items-center justify-end gap-1.5 overflow-x-auto py-0.5 sm:gap-2">
       <Button
         type="button"
         size="icon"
@@ -146,6 +179,40 @@ export function ReachyOpsBar() {
       >
         <IconScan className="size-4" />
       </Button>
+      <div className="ml-0.5 flex shrink-0 items-center gap-2 border-l border-border/45 pl-2 sm:gap-3 sm:pl-3">
+        <label className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="shrink-0 text-foreground/80">Mic</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={micVol}
+            disabled={busy}
+            className="h-2 w-[4.5rem] shrink-0 cursor-pointer accent-primary sm:w-[6.5rem]"
+            aria-label="Microphone input level on robot daemon"
+            onChange={(e) => onMicInput(Number(e.target.value))}
+          />
+          <span className="w-5 shrink-0 tabular-nums text-primary/90">{micVol}</span>
+        </label>
+        <label className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-wide text-muted-foreground">
+          <span className="shrink-0 text-foreground/80">Spk</span>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            value={spVol}
+            disabled={busy}
+            className="h-2 w-[4.5rem] shrink-0 cursor-pointer accent-primary sm:w-[6.5rem]"
+            aria-label="Robot speaker output level on daemon"
+            title="Release slider to apply; daemon may play a short test tone (Reachy /api/volume/set)."
+            onChange={(e) => setSpVol(Number(e.target.value))}
+            onPointerUp={(e) => {
+              send({ type: "audio_levels_set", speaker_volume: Math.round(Number(e.currentTarget.value)) });
+            }}
+          />
+          <span className="w-5 shrink-0 tabular-nums text-primary/90">{spVol}</span>
+        </label>
+      </div>
     </div>
   );
 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy.spatial.transform import Rotation as R
 
 from robot_manage.idle_look_sweep import (
@@ -13,8 +14,16 @@ from robot_manage.idle_look_sweep import (
 )
 
 
-def test_run_idle_look_sweep_pass_calls_goto_with_body_yaw() -> None:
+def test_run_idle_look_sweep_pass_calls_goto_with_body_yaw(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("robot_manage.idle_look_sweep.time.sleep", lambda *_a, **_k: None)
+    class _Media:
+        @staticmethod
+        def get_frame() -> None:
+            return None
+
     class Mini:
+        media = _Media()
+
         def __init__(self) -> None:
             self.goto_calls: list[dict] = []
 

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional
 from urllib.parse import urlparse
 
+import httpx
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +28,7 @@ from reachy_mini import ReachyMini
 from robot_manage.app_ui_hub import AppUiHub
 from robot_manage.camera_feed import MiniCameraPublisher
 from robot_manage.camera_layout import build_camera_layout
+from robot_manage.daemon_audio import apply_daemon_audio_levels, prime_daemon_audio_levels
 from robot_manage.daemon_preflight import ensure_reachy_mini_daemon_backend_running
 from robot_manage.jpeg_util import bgr_frame_to_jpeg_bytes
 from robot_manage.mic_buffer import MicCollectorThread, RobotMicRingBuffer
@@ -76,6 +78,8 @@ def create_app(
         "bot_awake": True,
         "audio_output_muted": False,
         "idle_look_sweep_enabled": False,
+        "daemon_speaker_volume": 70,
+        "daemon_mic_input_volume": 70,
         "_black_jpeg": None,
     }
     ui_hub = AppUiHub()
@@ -102,8 +106,38 @@ def create_app(
                 "bot_awake": bool(mic_state.get("bot_awake", True)),
                 "audio_output_enabled": not bool(mic_state.get("audio_output_muted", False)),
                 "idle_look_sweep_enabled": bool(mic_state.get("idle_look_sweep_enabled", False)),
+                "daemon_speaker_volume": int(mic_state.get("daemon_speaker_volume", 70)),
+                "daemon_mic_input_volume": int(mic_state.get("daemon_mic_input_volume", 70)),
             }
         )
+
+    def _json_int_percent(v: object) -> int | None:
+        if isinstance(v, bool):
+            return None
+        if isinstance(v, int):
+            return v
+        if isinstance(v, float):
+            return int(round(v))
+        return None
+
+    async def apply_audio_levels_from_msg(msg: dict[str, Any]) -> None:
+        mini = mini_ref[0]
+        if mini is None:
+            await broadcast_device_controls()
+            return
+        mic_v = _json_int_percent(msg.get("mic_input_volume"))
+        sp_v = _json_int_percent(msg.get("speaker_volume"))
+        if mic_v is None and sp_v is None:
+            return
+        async with httpx.AsyncClient() as c:
+            await apply_daemon_audio_levels(
+                c,
+                mini,
+                mic_state,
+                mic_input_volume=mic_v,
+                speaker_volume=sp_v,
+            )
+        await broadcast_device_controls()
 
     async def apply_device_toggle(dev: object) -> None:
         if not isinstance(dev, str) or dev not in (
@@ -218,6 +252,8 @@ def create_app(
                 "bot_awake": bool(mic_state.get("bot_awake", True)),
                 "audio_output_enabled": not bool(mic_state.get("audio_output_muted", False)),
                 "idle_look_sweep_enabled": bool(mic_state.get("idle_look_sweep_enabled", False)),
+                "daemon_speaker_volume": int(mic_state.get("daemon_speaker_volume", 70)),
+                "daemon_mic_input_volume": int(mic_state.get("daemon_mic_input_volume", 70)),
             },
         }
 
@@ -292,6 +328,19 @@ def create_app(
             mic_state["buffer"] = mic_buf
             mic_state["collector"] = mic_collector
             mic_collector.start()
+
+            async def _prime_daemon_audio() -> None:
+                m = mini_ref[0]
+                if m is None:
+                    return
+                try:
+                    async with httpx.AsyncClient() as c:
+                        await prime_daemon_audio_levels(c, m, mic_state)
+                    await broadcast_device_controls()
+                except Exception:
+                    pass
+
+            asyncio.create_task(_prime_daemon_audio())
             mlx_pipe = try_create_mlx_pipeline(mic_buf, mini, mic_state)
             if mlx_pipe is not None:
                 mic_state["mlx_pipeline"] = mlx_pipe
@@ -518,6 +567,11 @@ def create_app(
                     await ui_hub.broadcast_json({"type": "layout", "payload": lay})
                 elif mtype == "device_toggle":
                     await apply_device_toggle(msg.get("device"))
+                elif mtype == "audio_levels_set":
+                    try:
+                        await apply_audio_levels_from_msg(msg)
+                    except Exception as e:
+                        await websocket.send_json({"type": "error", "message": f"audio_levels:{e!s}"})
                 elif mtype == "modes_tools_set":
                     pipe = await ensure_mlx_voice_pipeline(mic_state)
                     if pipe is None:

@@ -9,25 +9,27 @@ from typing import Any, Final
 import numpy as np
 from scipy.spatial.transform import Rotation as R
 
-# Conservative ranges: head hy/hp ≈ ±12°, body_db ≈ ±20°, antennas ≈ ±12°; longer durations for min-jerk.
+# One ``goto_target`` per row; sleep past ``duration`` so the daemon finishes before the next
+# command (avoids preemption / stacked jerks). Durations ~1.4× the old fast sweep — visible
+# motion, still slower than the original ~0.75–1.0s snaps.
+_SETTLE_AFTER_MOVE_S: Final[float] = 0.18
+
 _SWEEP_KEYFRAMES: Final[
     list[tuple[float, float, float, tuple[float, float], float]]
 ] = [
     # hy, hp, body_db, (ant_r, ant_l), duration_s
-    (0.0, 0.0, 0.0, (0.0, 0.0), 0.75),
-    (0.14, 0.05, 0.18, (0.18, -0.16), 1.0),
-    (0.06, 0.1, 0.28, (0.16, 0.14), 1.0),
-    (-0.1, 0.04, 0.16, (-0.16, 0.18), 1.0),
-    (-0.16, -0.03, -0.12, (-0.18, -0.16), 1.0),
-    (-0.05, -0.1, -0.28, (0.14, -0.14), 1.0),
-    (0.1, -0.05, -0.2, (-0.14, 0.12), 1.0),
-    (0.05, 0.07, -0.08, (0.12, -0.12), 0.95),
-    (0.0, 0.09, 0.1, (-0.14, -0.14), 0.95),
-    (-0.1, -0.06, 0.22, (0.15, 0.13), 1.0),
-    (0.04, 0.0, 0.0, (0.0, 0.0), 1.05),
+    (0.0, 0.0, 0.0, (0.0, 0.0), 1.15),
+    (0.14, 0.05, 0.18, (0.18, -0.16), 1.48),
+    (0.06, 0.1, 0.28, (0.16, 0.14), 1.48),
+    (-0.1, 0.04, 0.16, (-0.16, 0.18), 1.48),
+    (-0.16, -0.03, -0.12, (-0.18, -0.16), 1.48),
+    (-0.05, -0.1, -0.28, (0.14, -0.14), 1.48),
+    (0.1, -0.05, -0.2, (-0.14, 0.12), 1.48),
+    (0.05, 0.07, -0.08, (0.12, -0.12), 1.42),
+    (0.0, 0.09, 0.1, (-0.14, -0.14), 1.42),
+    (-0.1, -0.06, 0.22, (0.15, 0.13), 1.48),
+    (0.04, 0.0, 0.0, (0.0, 0.0), 1.55),
 ]
-
-_SETTLE_S: Final[float] = 0.1
 
 
 def _current_body_yaw_reference(mini: Any) -> float:
@@ -67,15 +69,16 @@ def run_idle_look_sweep_pass(mini: Any, should_continue: Callable[[], bool]) -> 
     for hy, hp, body_db, (ar, al), dur in _SWEEP_KEYFRAMES:
         if not should_continue():
             return
-        head = _pose_leveled_yaw_pitch(init, hy, hp)
+        head = _pose_leveled_yaw_pitch(init, float(hy), float(hp))
         body_yaw = y0 + float(body_db)
+        d = float(dur)
         mini.goto_target(
             head=head,
             antennas=[float(ar), float(al)],
-            duration=float(dur),
+            duration=d,
             body_yaw=body_yaw,
         )
-        time.sleep(float(dur) + _SETTLE_S)
+        time.sleep(d + _SETTLE_AFTER_MOVE_S)
 
 
 def run_idle_look_sweep(mini: Any) -> None:
