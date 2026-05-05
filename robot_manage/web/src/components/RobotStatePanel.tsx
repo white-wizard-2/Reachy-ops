@@ -1,6 +1,7 @@
 import { useMemo, type ReactNode } from "react";
 
 import type { RobotStateMsg } from "@/AppSocketContext";
+import { CollapsibleCardToggle, useCollapsibleCard } from "@/components/CollapsibleCardHeader";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -130,6 +131,7 @@ export function RobotStatePanel({
   robotState: RobotStateMsg | null;
   className?: string;
 }) {
+  const { open, toggle, contentId } = useCollapsibleCard(false);
   const parsed = useMemo(() => {
     const data = robotState?.data;
     if (!data || typeof data !== "object") return null;
@@ -155,11 +157,13 @@ export function RobotStatePanel({
       className={cn(
         "viewport-glass relative flex min-h-0 min-w-0 flex-col overflow-hidden transition-shadow duration-500",
         className,
+        !open && "flex-none h-[172px]",
       )}
     >
       <div className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-primary/15 blur-2xl" />
       <div className="pointer-events-none absolute -bottom-10 -left-10 h-28 w-28 rounded-full bg-secondary/20 blur-3xl" />
       <CardHeader className="relative z-10 shrink-0 space-y-3 pb-2">
+        <CollapsibleCardToggle open={open} onToggle={toggle} controlsId={contentId} className="absolute right-3 top-3" />
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <p className="font-mono text-[10px] font-medium uppercase tracking-[0.35em] text-primary/80">STATE-01</p>
@@ -172,7 +176,11 @@ export function RobotStatePanel({
         </div>
         <Separator className="bg-gradient-to-r from-transparent via-primary/25 to-transparent" />
       </CardHeader>
-      <CardContent className="relative z-10 flex min-h-0 flex-1 flex-col px-4 pb-4 pt-0 md:px-6 md:pb-6">
+      {open ? (
+        <CardContent
+          id={contentId}
+          className="relative z-10 flex min-h-0 flex-1 flex-col px-4 pb-4 pt-0 md:px-6 md:pb-6"
+        >
         <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-border/60 bg-black/80">
           <div className="pointer-events-none absolute inset-0 rounded-lg ring-1 ring-inset ring-primary/10" />
           <div className="relative z-10 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 md:p-4">
@@ -272,7 +280,8 @@ export function RobotStatePanel({
             ) : null}
           </div>
         </div>
-      </CardContent>
+        </CardContent>
+      ) : null}
     </Card>
   );
 }

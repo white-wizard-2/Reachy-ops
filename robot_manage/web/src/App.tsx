@@ -23,6 +23,7 @@ export default function App() {
   );
 
   const toolsOnSet = useMemo(() => new Set(state.modesTools.tools), [state.modesTools.tools]);
+  const moveCatalog = state.moveCatalog ?? { emotions: [], dances: [] };
 
   const feeds = layout?.feeds ?? [];
   const primaryFeed = feeds[0];
@@ -80,9 +81,9 @@ export default function App() {
       <div className="pointer-events-none fixed inset-0 bg-grid-fade bg-[length:32px_32px] opacity-[0.35]" />
 
       <div className="relative z-10 w-full px-4 py-8 sm:px-6 md:py-12 lg:px-10 xl:px-12">
-        <header className="mb-4 md:mb-5">
+        <header className="mb-2 md:mb-3">
           <div className="grid min-h-0 grid-cols-1 items-stretch gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_min(100%,30%)] lg:gap-6 xl:gap-8">
-            <div className="flex min-h-0 min-w-0 flex-col lg:min-h-[min(42vh,20rem)]">
+            <div className="flex min-h-0 min-w-0 flex-col">
               {primaryOptical}
             </div>
             <div className="flex min-h-0 min-w-0 flex-col lg:min-h-0">
@@ -93,6 +94,10 @@ export default function App() {
                 className="h-full min-h-0 w-full min-w-0"
                 activeMode={state.modesTools.mode}
                 toolsOn={toolsOnSet}
+                moveCatalog={moveCatalog}
+                onPlayMove={(m: { library: "emotions" | "dances"; id: string }) =>
+                  send({ type: "play_move", library: m.library, id: m.id })
+                }
                 onActiveModeChange={(m) => void persistModesTools({ mode: m, tools: state.modesTools.tools })}
                 onToolsOnChange={(s) => void persistModesTools({ mode: state.modesTools.mode, tools: [...s] })}
               />
@@ -109,7 +114,7 @@ export default function App() {
           </Card>
         ) : null}
 
-        <Separator className="my-4 bg-gradient-to-r from-transparent via-primary/20 to-transparent md:my-5" />
+        <Separator className="my-2 bg-gradient-to-r from-transparent via-primary/20 to-transparent md:my-3" />
 
         <VoiceCognition />
 

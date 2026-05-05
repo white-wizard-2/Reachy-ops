@@ -153,6 +153,18 @@ def move_id_catalog_reference() -> str:
     )
 
 
+def emotion_ids() -> list[str]:
+    """Sorted allowlisted emotion move ids."""
+
+    return sorted(_EMOTION_NAMES)
+
+
+def dance_ids() -> list[str]:
+    """Sorted allowlisted dance move ids."""
+
+    return sorted(_DANCE_NAMES)
+
+
 def dataset_for_kind(kind: str) -> str:
     k = kind.lower()
     if k == "emotions":

@@ -14,7 +14,7 @@ from robot_manage.llm_say import LlmSayRunner, pull_complete_sentences
 from robot_manage.mic_buffer import RobotMicRingBuffer
 from robot_manage.mlx_whisper_status import mlx_whisper_import_probe
 from robot_manage.motion_reactions import select_reaction_move_for_speech
-from robot_manage.move_catalog import VoiceAssistantJsonError, parse_voice_assistant_output
+from robot_manage.move_catalog import VoiceAssistantJsonError, parse_voice_assistant_output, validated_move
 from robot_manage.ollama_voice import (
     complete_chat_with_robot_tools,
     stream_text_chat_messages,
@@ -36,10 +36,10 @@ from robot_manage.settings import (
     ollama_voice_max_history_messages,
     ollama_voice_robot_tools_enabled,
     ollama_voice_say_post_ms,
-    ollama_voice_text_system_prompt,
     robot_manage_reaction_moves_enabled,
 )
 from robot_manage.voice_command_parser import format_command_speech, try_parse_voice_command
+from robot_manage.voice_modes import MODE_SENTRY, full_voice_system_prompt, is_silent_mode
 from robot_manage.wav_utils import stereo_float32_to_mono_float32
 
 _mlx_ensure_lock = asyncio.Lock()
@@ -229,6 +229,8 @@ class MlxLiveVoicePipeline:
         self._tools_on: set[str] = set()
         self._ws_voice_notify: Optional[Callable[[dict[str, Any]], Awaitable[None]]] = None
         self._idle_look_sweep_task: asyncio.Task[None] | None = None
+        self._sentry_era = 0
+        self._sentry_task: asyncio.Task[None] | None = None
 
     def set_ws_voice_notify(self, fn: Optional[Callable[[dict[str, Any]], Awaitable[None]]]) -> None:
         """Optional fan-out for UI (modes/conversation/errors); not used for per-token streaming."""
@@ -271,6 +273,7 @@ class MlxLiveVoicePipeline:
         from robot_manage.voice_command_parser import MODE_LABELS, TOOL_LABELS
 
         async with self._modes_tools_lock:
+            prev_mode = self._active_mode
             if mode is not None and mode not in MODE_LABELS:
                 raise ValueError(f"unknown mode: {mode!r}")
             for t in tools:
@@ -281,6 +284,78 @@ class MlxLiveVoicePipeline:
             self._tools_on = set(tools)
             out = {"event": "modes_tools", "mode": self._active_mode, "tools": sorted(self._tools_on)}
         await self._broadcast(out)
+        await self._apply_mode_to_system_message()
+        if (mode == MODE_SENTRY) != (prev_mode == MODE_SENTRY):
+            await self._sync_sentry_task_with_mode()
+
+    async def _read_active_mode(self) -> str | None:
+        async with self._modes_tools_lock:
+            return self._active_mode
+
+    async def _apply_mode_to_system_message(self) -> None:
+        m = await self._read_active_mode()
+        async with self._llm_lock:
+            if not self._llm_messages:
+                return
+            self._llm_messages[0] = {"role": "system", "content": full_voice_system_prompt(m)}
+        await self._broadcast(
+            {"event": "conversation", "messages": _conversation_for_sse(self._llm_messages)}
+        )
+
+    async def _cancel_sentry_task_only(self) -> None:
+        t = self._sentry_task
+        self._sentry_task = None
+        if t is not None and not t.done():
+            t.cancel()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+
+    async def _sync_sentry_task_with_mode(self) -> None:
+        mode = await self._read_active_mode()
+        if mode == MODE_SENTRY:
+            self._sentry_era += 1
+            era = self._sentry_era
+            await self._cancel_sentry_task_only()
+            mini = self._mini
+            client = self._client
+            if mini is not None and client is not None:
+                self._sentry_task = asyncio.create_task(self._sentry_patrol_worker(era), name="sentry_patrol")
+        else:
+            self._sentry_era += 1
+            await self._cancel_sentry_task_only()
+
+    async def _sentry_patrol_worker(self, era: int) -> None:
+        mini = self._mini
+        client = self._client
+        if mini is None or client is None:
+            return
+        base = ollama_base_url()
+        model = ollama_model()
+
+        def should_stop() -> bool:
+            return self._stop.is_set() or self._sentry_era != era
+
+        async def speak_alert(msg: str) -> None:
+            if self._say.running and msg.strip():
+                await self._say.enqueue_sentence(msg.strip())
+
+        try:
+            from robot_manage.sentry_mode import run_sentry_patrol
+
+            await run_sentry_patrol(
+                mini,
+                client,
+                base_url=base,
+                model=model,
+                should_stop=should_stop,
+                speak_alert=speak_alert,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            await self._broadcast({"event": "error", "message": f"sentry_patrol:{e!s}"})
 
     async def _handle_voice_command_text(self, text: str) -> bool:
         """Apply activate/deactivate voice command; return ``True`` to skip LLM for this utterance."""
@@ -290,6 +365,7 @@ class MlxLiveVoicePipeline:
             return False
         action, kind, label = parsed
         async with self._modes_tools_lock:
+            prev_mode = self._active_mode
             if kind == "mode":
                 if action == "activate":
                     # Exactly one mode may be active; assigning replaces any previous mode.
@@ -300,9 +376,13 @@ class MlxLiveVoicePipeline:
                 self._tools_on.add(label)
             else:
                 self._tools_on.discard(label)
+            mode_after = self._active_mode
             out = {"event": "modes_tools", "mode": self._active_mode, "tools": sorted(self._tools_on)}
         await self._broadcast(out)
-        if self._say.running:
+        await self._apply_mode_to_system_message()
+        if (mode_after == MODE_SENTRY) != (prev_mode == MODE_SENTRY):
+            await self._sync_sentry_task_with_mode()
+        if self._say.running and not is_silent_mode(mode_after):
             await self._say.enqueue_sentence(format_command_speech(action, kind, label))
         return True
 
@@ -333,7 +413,7 @@ class MlxLiveVoicePipeline:
     async def start(self) -> None:
         self._asr_cursor = self._buf.end_sample_index()
         self._llm_messages = [
-            {"role": "system", "content": ollama_voice_text_system_prompt().strip()},
+            {"role": "system", "content": full_voice_system_prompt(None)},
         ]
         self._utt_chunks = []
         self._in_utt = False
@@ -353,6 +433,8 @@ class MlxLiveVoicePipeline:
 
     async def aclose(self) -> None:
         self._stop.set()
+        self._sentry_era += 1
+        await self._cancel_sentry_task_only()
         for t in self._tasks:
             t.cancel()
             try:
@@ -393,6 +475,46 @@ class MlxLiveVoicePipeline:
             except asyncio.CancelledError:
                 pass
 
+    async def play_user_move(self, library: str, move_id: str) -> None:
+        """Pause background mode tasks, play one predefined move, then resume tasks."""
+
+        pair = validated_move(library, move_id)
+        if not pair:
+            raise ValueError(f"unknown move: {library!r}/{move_id!r}")
+        hf, nm = pair
+
+        mode_before = await self._read_active_mode()
+        paused_sentry = mode_before == MODE_SENTRY
+        self._controls["motion_paused"] = True
+        if paused_sentry:
+            self._sentry_era += 1
+            await self._cancel_sentry_task_only()
+
+        try:
+            # Stop any other moves and ensure sweep tasks don't keep sending motion.
+            t_idle = self._idle_look_sweep_task
+            if t_idle is not None and not t_idle.done():
+                t_idle.cancel()
+                try:
+                    await t_idle
+                except asyncio.CancelledError:
+                    pass
+                self._idle_look_sweep_task = None
+
+            await self._stop_move_playback()
+            self._move_play_task = asyncio.create_task(
+                self._play_move_worker(hf, nm),
+                name="mlx_user_move",
+            )
+            t = self._move_play_task
+            if t is not None:
+                await t
+        finally:
+            self._controls["motion_paused"] = False
+
+        if paused_sentry and await self._read_active_mode() == MODE_SENTRY:
+            await self._sync_sentry_task_with_mode()
+
     def trigger_idle_look_sweep(self) -> None:
         """Start looping head + body + antenna sweeps until disabled (no-op without ``mini``)."""
 
@@ -425,7 +547,9 @@ class MlxLiveVoicePipeline:
         try:
 
             def _sweep_armed() -> bool:
-                return bool(self._controls.get("idle_look_sweep_enabled"))
+                return bool(self._controls.get("idle_look_sweep_enabled")) and not bool(
+                    self._controls.get("motion_paused", False)
+                )
 
             while _sweep_armed() and not self._stop.is_set():
                 await asyncio.to_thread(run_idle_look_sweep_pass, mini, _sweep_armed)
@@ -596,6 +720,7 @@ class MlxLiveVoicePipeline:
         client = self._client
         if client is None:
             return
+        mode_for_tts = await self._read_active_mode()
         async with self._llm_lock:
             turn_base = len(self._llm_messages)
             self._llm_messages.append({"role": "user", "content": user_text})
@@ -663,7 +788,7 @@ class MlxLiveVoicePipeline:
                 if self._say.running and speech.strip() and self._move_spec_this_turn is None:
                     if robot_manage_reaction_moves_enabled():
                         self._move_spec_this_turn = select_reaction_move_for_speech(speech.strip())
-                if speech.strip():
+                if speech.strip() and not is_silent_mode(mode_for_tts):
                     await _enqueue_speech_sentences(self._say, speech)
                 await self._broadcast({"event": "llm_round_end"})
             except asyncio.CancelledError:

@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAppSocket } from "@/AppSocketContext";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { CollapsibleCardToggle, useCollapsibleCard } from "@/components/CollapsibleCardHeader";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
@@ -146,6 +147,7 @@ export function VoiceCognition() {
   const voiceUnsubRef = useRef<(() => void) | null>(null);
   const voiceResumeRef = useRef(false);
   const llmPreRef = useRef<HTMLPreElement>(null);
+  const { open: liveOpen, toggle: liveToggle, contentId: liveContentId } = useCollapsibleCard(false);
   const [uiHydrated, setUiHydrated] = useState(false);
 
   useEffect(() => {
@@ -318,6 +320,12 @@ export function VoiceCognition() {
       <Card className="viewport-glass relative overflow-hidden border-primary/25">
         <div className="pointer-events-none absolute right-0 top-0 h-40 w-40 bg-primary/10 blur-3xl" />
         <CardHeader className="relative z-10">
+          <CollapsibleCardToggle
+            open={liveOpen}
+            onToggle={liveToggle}
+            controlsId={liveContentId}
+            className="absolute right-3 top-3"
+          />
           <CardTitle className="font-display text-lg tracking-wide">Live — MLX + Ollama (context)</CardTitle>
           <CardDescription className="text-xs leading-relaxed text-muted-foreground/95">
             {pipe?.mlx_whisper_import_ok === false
@@ -330,7 +338,8 @@ export function VoiceCognition() {
           </CardDescription>
           <Separator className="mt-3 bg-gradient-to-r from-transparent via-primary/30 to-transparent" />
         </CardHeader>
-        <CardContent className="relative z-10 space-y-4">
+        {liveOpen ? (
+          <CardContent id={liveContentId} className="relative z-10 space-y-4">
           <div className="grid gap-4 lg:grid-cols-2 2xl:grid-cols-3 2xl:items-start">
             <div className="min-w-0 space-y-2">
               <p className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">Latest utterance</p>
@@ -367,7 +376,8 @@ export function VoiceCognition() {
             </Button>
           </div>
           {liveErr ? <p className="font-mono text-xs text-amber-300/90">{liveErr}</p> : null}
-        </CardContent>
+          </CardContent>
+        ) : null}
       </Card>
     </section>
   );

@@ -35,6 +35,7 @@ from robot_manage.jpeg_util import bgr_frame_to_jpeg_bytes
 from robot_manage.mic_buffer import MicCollectorThread, RobotMicRingBuffer
 from robot_manage.mlx_voice_pipeline import ensure_mlx_voice_pipeline, try_create_mlx_pipeline
 from robot_manage.mlx_whisper_status import mlx_whisper_import_probe
+from robot_manage.move_ui_catalog import ui_move_catalog
 from robot_manage.robot_state_hub import RobotStateHub, robot_state_poll_loop
 from robot_manage.settings import (
     ollama_base_url,
@@ -87,6 +88,7 @@ def create_app(
         "bot_awake": True,
         "audio_output_muted": False,
         "idle_look_sweep_enabled": False,
+        "motion_paused": False,
         "daemon_speaker_volume": 70,
         "daemon_mic_input_volume": 70,
         "_black_jpeg": None,
@@ -271,6 +273,7 @@ def create_app(
             "voice_status": voice_status,
             "voice_meter": voice_meter,
             "modes_tools": modes_tools,
+            "move_catalog": ui_move_catalog(),
             "conversation": conversation,
             "robot_state": robot_state,
             "yolo_vision": {
@@ -638,6 +641,24 @@ def create_app(
                         await websocket.send_json(
                             {"type": "modes_tools_error", "detail": str(e)}
                         )
+                elif mtype == "play_move":
+                    mini = mini_ref[0]
+                    if mini is None:
+                        await websocket.send_json({"type": "error", "message": "robot_not_ready"})
+                        continue
+                    pipe = await ensure_mlx_voice_pipeline(mic_state)
+                    if pipe is None:
+                        await websocket.send_json({"type": "error", "message": "voice_pipeline_not_ready"})
+                        continue
+                    lib = msg.get("library")
+                    mid = msg.get("id")
+                    if not isinstance(lib, str) or not isinstance(mid, str):
+                        await websocket.send_json({"type": "error", "message": "bad_move_payload"})
+                        continue
+                    try:
+                        await pipe.play_user_move(lib, mid)
+                    except Exception as e:  # noqa: BLE001
+                        await websocket.send_json({"type": "error", "message": f"play_move:{e!s}"})
                 elif mtype == "voice_live_start":
                     await stop_voice_live_forward(ws_key)
                     pipe = await ensure_mlx_voice_pipeline(mic_state)

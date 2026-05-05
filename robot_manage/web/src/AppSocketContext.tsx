@@ -55,6 +55,10 @@ type SnapshotPayload = {
   voice_status: VoiceStatus;
   voice_meter: MeterPayload;
   modes_tools: { mode: string | null; tools: string[] };
+  move_catalog?: {
+    emotions: { library: "emotions"; id: string; emoji: string }[];
+    dances: { library: "dances"; id: string; emoji: string }[];
+  };
   conversation: { role: string; content: string }[];
   robot_state: RobotStateMsg;
   yolo_vision?: YoloVisionState;
@@ -80,6 +84,7 @@ type AppSocketState = {
   voiceStatus: VoiceStatus;
   voiceMeter: MeterPayload;
   modesTools: { mode: string | null; tools: string[] };
+  moveCatalog: SnapshotPayload["move_catalog"];
   conversation: { role: string; content: string }[];
   deviceControls: DeviceControlsState;
   yoloVision: YoloVisionState;
@@ -128,6 +133,7 @@ const initial: AppSocketState = {
   voiceStatus: { buffering: false, buffered_seconds_estimate: 0 },
   voiceMeter: { levels: [], peak: 0 },
   modesTools: { mode: null, tools: [] },
+  moveCatalog: undefined,
   conversation: [],
   deviceControls: { ...defaultDeviceControls },
   yoloVision: {
@@ -207,6 +213,7 @@ function reducer(s: AppSocketState, a: Action): AppSocketState {
         voiceStatus: a.v.voice_status,
         voiceMeter: a.v.voice_meter,
         modesTools: a.v.modes_tools,
+        moveCatalog: a.v.move_catalog,
         conversation: a.v.conversation,
         robotState: a.v.robot_state,
         deviceControls: normalizeDeviceControls(a.v.device_controls),

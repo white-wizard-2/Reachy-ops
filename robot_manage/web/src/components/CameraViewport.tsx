@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 
+import { CollapsibleCardToggle, useCollapsibleCard } from "@/components/CollapsibleCardHeader";
 import { PrimaryBrandBlock } from "@/components/PrimaryBrandBlock";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -53,6 +54,7 @@ export function CameraViewport({
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const cvRef = useRef<HTMLCanvasElement | null>(null);
   const [drawPayload, setDrawPayload] = useState<YoloDetectionsPayload | null>(null);
+  const { open, toggle, contentId } = useCollapsibleCard(false);
 
   useEffect(() => {
     if (!cameraEnabled || !showStream) {
@@ -137,11 +139,13 @@ export function CameraViewport({
         "viewport-glass relative flex h-full min-h-0 flex-col overflow-hidden transition-shadow duration-500",
         showStream && "shadow-[0_0_48px_-8px_hsl(var(--primary)/0.35)]",
         className,
+        !open && "flex-none h-[172px]",
       )}
     >
       <div className="pointer-events-none absolute -right-8 -top-8 h-24 w-24 rounded-full bg-primary/15 blur-2xl" />
       <div className="pointer-events-none absolute -bottom-10 -left-10 h-28 w-28 rounded-full bg-secondary/20 blur-3xl" />
       <CardHeader className="relative z-10 space-y-3 pb-2">
+        <CollapsibleCardToggle open={open} onToggle={toggle} controlsId={contentId} className="absolute right-3 top-3" />
         {showBrand ? (
           <>
             <PrimaryBrandBlock />
@@ -150,51 +154,63 @@ export function CameraViewport({
         ) : null}
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <p className="font-mono text-[10px] font-medium uppercase tracking-[0.35em] text-primary/80">
-              {feed.channel}
-            </p>
-            <CardTitle className="font-display text-lg tracking-wide md:text-xl">{feed.label}</CardTitle>
-            <CardDescription className="font-mono text-xs text-muted-foreground/90">
-              Robot camera (MJPEG) · YOLO-MLX ByteTrack overlay
-            </CardDescription>
-            {yoloVision != null ? (
-              <p className="mt-1 max-w-prose font-mono text-[10px] leading-relaxed text-muted-foreground">
-                {yoloActive
-                  ? `${drawPayload?.tracks.length ?? 0} track(s) · frame ${drawPayload?.frame_hw[1] ?? "—"}×${drawPayload?.frame_hw[0] ?? "—"}`
-                  : yoloReady
-                    ? `Weights configured — worker not running${yoloVision.worker_detail ? `: ${yoloVision.worker_detail}` : " (check server logs)"}.`
-                    : yoloVision.import_ok
-                      ? "Set ROBOT_MANAGE_YOLO_NPZ to a converted .npz on the Mac host."
-                      : "Install yolo-mlx on the Apple Silicon host (see requirements-robot-manage-yolo.txt)."}
+            {open ? (
+              <p className="font-mono text-[10px] font-medium uppercase tracking-[0.35em] text-primary/80">
+                {feed.channel}
               </p>
             ) : null}
-          </div>
-          <div className="flex flex-col items-end gap-2">
-            <Badge variant={statusBadgeVariant(feed.status)} className="font-mono uppercase tracking-wider">
-              {feed.status}
-            </Badge>
-            {onToggleYoloFollow != null && yoloVision != null && yoloVision.import_ok && yoloVision.weights_path ? (
-              <Button
-                type="button"
-                size="sm"
-                variant={yoloFollowEnabled ? "secondary" : "outline"}
-                className="font-mono text-[10px] uppercase tracking-wider"
-                disabled={!yoloActive}
-                title={
-                  yoloActive
-                    ? "Steer head toward moving tracked objects (ByteTrack + look_at_image)"
-                    : "YOLO worker must be running"
-                }
-                onClick={() => onToggleYoloFollow()}
-              >
-                Follow track {yoloFollowEnabled ? "on" : "off"}
-              </Button>
+            <CardTitle className="font-display text-lg tracking-wide md:text-xl">{feed.label}</CardTitle>
+            {open ? (
+              <>
+                <CardDescription className="font-mono text-xs text-muted-foreground/90">
+                  Robot camera (MJPEG) · YOLO-MLX ByteTrack overlay
+                </CardDescription>
+                {yoloVision != null ? (
+                  <p className="mt-1 max-w-prose font-mono text-[10px] leading-relaxed text-muted-foreground">
+                    {yoloActive
+                      ? `${drawPayload?.tracks.length ?? 0} track(s) · frame ${drawPayload?.frame_hw[1] ?? "—"}×${drawPayload?.frame_hw[0] ?? "—"}`
+                      : yoloReady
+                        ? `Weights configured — worker not running${yoloVision.worker_detail ? `: ${yoloVision.worker_detail}` : " (check server logs)"}.`
+                        : yoloVision.import_ok
+                          ? "Set ROBOT_MANAGE_YOLO_NPZ to a converted .npz on the Mac host."
+                          : "Install yolo-mlx on the Apple Silicon host (see requirements-robot-manage-yolo.txt)."}
+                  </p>
+                ) : null}
+              </>
             ) : null}
           </div>
+          {open ? (
+            <div className="flex flex-col items-end gap-2">
+              <Badge variant={statusBadgeVariant(feed.status)} className="font-mono uppercase tracking-wider">
+                {feed.status}
+              </Badge>
+              {onToggleYoloFollow != null && yoloVision != null && yoloVision.import_ok && yoloVision.weights_path ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={yoloFollowEnabled ? "secondary" : "outline"}
+                  className="font-mono text-[10px] uppercase tracking-wider"
+                  disabled={!yoloActive}
+                  title={
+                    yoloActive
+                      ? "Steer head toward moving tracked objects (ByteTrack + look_at_image)"
+                      : "YOLO worker must be running"
+                  }
+                  onClick={() => onToggleYoloFollow()}
+                >
+                  Follow track {yoloFollowEnabled ? "on" : "off"}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
         <Separator className="bg-gradient-to-r from-transparent via-primary/25 to-transparent" />
       </CardHeader>
-      <CardContent className="relative z-10 flex min-h-0 flex-1 flex-col px-4 pb-4 pt-0 md:px-6 md:pb-6">
+      {open ? (
+        <CardContent
+          id={contentId}
+          className="relative z-10 flex min-h-0 flex-1 flex-col px-4 pb-4 pt-0 md:px-6 md:pb-6"
+        >
         <div
           ref={wrapRef}
           className={cn(
@@ -222,7 +238,8 @@ export function CameraViewport({
             <Placeholder detail={feed.detail} channel={feed.channel} />
           )}
         </div>
-      </CardContent>
+        </CardContent>
+      ) : null}
     </Card>
   );
 }

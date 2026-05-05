@@ -98,6 +98,39 @@ async def stream_text_chat_messages(
         yield part
 
 
+async def complete_vision_chat(
+    client: httpx.AsyncClient,
+    base_url: str,
+    model: str,
+    *,
+    system: str,
+    user: str,
+    images: list[str],
+) -> str:
+    """One non-streaming ``/api/chat`` with base64 JPEG ``images`` (Ollama vision)."""
+
+    url = f"{base_url.rstrip('/')}/api/chat"
+    options = {"num_ctx": ollama_num_ctx()}
+    payload: dict[str, Any] = {
+        "model": model,
+        "stream": False,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user, "images": images},
+        ],
+        "options": options,
+        "think": False,
+    }
+    r = await client.post(url, json=payload)
+    if r.is_error:
+        raise RuntimeError(f"ollama_vision_http_{r.status_code}:{_http_error_detail(r)}")
+    data = r.json()
+    if "error" in data:
+        raise RuntimeError(str(data["error"]))
+    msg = data.get("message") or {}
+    return str(msg.get("content", "") or "")
+
+
 async def complete_chat_with_robot_tools(
     *,
     client: httpx.AsyncClient,

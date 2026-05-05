@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Final, Literal
 
+from robot_manage.voice_modes import CANONICAL_MODE_LABELS
+
 Action = Literal["activate", "deactivate"]
 Kind = Literal["mode", "tool"]
 
@@ -13,13 +15,11 @@ _MODE_ALIASES: Final[tuple[tuple[str, str], ...]] = (
     ("teacher mode", "Teacher Mode"),
     ("sentry mode", "Sentry Mode"),
     ("silent mode", "Silent Mode"),
-    ("guardian mode", "Guardian Mode"),
-    ("mute mode", "Mute Mode"),
+    ("mute mode", "Silent Mode"),
     ("teacher", "Teacher Mode"),
     ("sentry", "Sentry Mode"),
     ("silent", "Silent Mode"),
-    ("guardian", "Guardian Mode"),
-    ("mute", "Mute Mode"),
+    ("mute", "Silent Mode"),
 )
 
 _TOOL_ALIASES: Final[tuple[tuple[str, str], ...]] = (
@@ -31,7 +31,7 @@ _TOOL_ALIASES: Final[tuple[tuple[str, str], ...]] = (
     ("audio", "Voice"),
 )
 
-MODE_LABELS: Final[frozenset[str]] = frozenset({label for _, label in _MODE_ALIASES})
+MODE_LABELS: Final[frozenset[str]] = CANONICAL_MODE_LABELS
 TOOL_LABELS: Final[frozenset[str]] = frozenset({label for _, label in _TOOL_ALIASES})
 
 _ACTIVATE_RE: Final[re.Pattern[str]] = re.compile(r"\bactivate\b", re.IGNORECASE)

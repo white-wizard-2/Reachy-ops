@@ -160,6 +160,7 @@ class YoloMlxVisionWorker:
             if (
                 bool(self._mic_state.get("yolo_follow_enabled", True))
                 and bool(self._mic_state.get("bot_awake", True))
+                and not bool(self._mic_state.get("motion_paused", False))
                 and boxes is not None
                 and boxes.is_track
                 and len(boxes) > 0
